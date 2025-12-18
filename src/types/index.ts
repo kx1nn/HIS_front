@@ -46,6 +46,12 @@ export interface RegistrationVO extends RegistrationDTO {
   statusDesc: string; // "待诊"
   sequence: number;   // 排队号
   createTime: string;
+  // 可选的后端返回字段，增加以匹配后端 OpenAPI/示例
+  patientId?: number;
+  registrationFee?: number;
+  queueNo?: string;
+  visitDate?: string;
+  createdAt?: string;
   doctorName?: string; // 方便展示
   deptName?: string;   // 方便展示
 }
