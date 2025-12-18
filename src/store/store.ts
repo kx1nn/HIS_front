@@ -11,6 +11,8 @@ export interface AppState {
   // 主数据 (模拟数据库)
   doctors: Doctor[];
   departments: Department[];
+  setDoctors: (ds: Doctor[]) => void;
+  setDepartments: (ds: Department[]) => void;
 }
 
 // --- 模拟的基础数据 (可以直接使用) ---
@@ -36,6 +38,9 @@ export const useStore = create<AppState>((set) => ({
   user: initialUser,
   doctors: MOCK_DOCTORS,
   departments: MOCK_DEPTS,
+
+  setDoctors: (ds: Doctor[]) => set({ doctors: ds }),
+  setDepartments: (ds: Department[]) => set({ departments: ds }),
 
   // 登录动作
   login: (user) => {

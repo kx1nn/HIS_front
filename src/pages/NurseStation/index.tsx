@@ -1,9 +1,10 @@
 // src/pages/NurseStation/index.tsx
-import React, { useState, useEffect } from 'react';
-import { ClipboardList, Search, Plus, Activity, CreditCard, Phone, CheckCircle, ShieldCheck } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { ClipboardList, Search, Plus, Activity, CreditCard, Phone, ShieldCheck } from 'lucide-react';
 import { useStore } from '../../store/store';
-import { registrationApi } from '../../services/api';
-import type { RegistrationVO } from '../../types';
+import { basicApi, registrationApi, patientApi } from '../../services/api';
+import type { RawDoctor, RawDepartment } from '../../services/api';
+import type { RegistrationVO, Patient } from '../../types';
 
 const NurseStation: React.FC = () => {
   const { doctors, departments, user } = useStore();
@@ -12,8 +13,7 @@ const NurseStation: React.FC = () => {
   const [patients, setPatients] = useState<RegistrationVO[]>([]);
   const [receipt, setReceipt] = useState<RegistrationVO | null>(null);
   
-  // 固定的医生 ID（UI 中不可更改）
-  const FIXED_DOCTOR_ID = '1';
+  const FIXED_DOCTOR_ID = '';
   // Calculate initial doctor
   const initialDeptId = 1;
   const initialActiveDoctors = doctors.filter(d => d.deptId === initialDeptId && d.isWorking);
@@ -26,66 +26,215 @@ const NurseStation: React.FC = () => {
   });
 
   // 1. 根据科室筛选医生
-  const activeDoctors = doctors.filter(d => d.deptId === Number(formData.deptId) && d.isWorking);
+  const activeDoctors = doctors.filter(d => d.deptId === Number(formData.deptId));
+
+  type ReceivedRegistration = Partial<RegistrationVO> & {
+    insurance?: string;
+    insurance_type?: string;
+    dept_name?: string;
+    doctor_name?: string;
+    departmentName?: string;
+    doctor?: string;
+  };
+
+  const [search, setSearch] = useState('');
+  const [searchOld, setSearchOld] = useState('');
+  const [oldPatients, setOldPatients] = useState<Patient[]>([]);
+  const [oldSearchStatus, setOldSearchStatus] = useState<'idle' | 'loading' | 'not-found' | 'error'>('idle');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const normalizeReg = useCallback((r: ReceivedRegistration): RegistrationVO => ({
+    ...(r as RegistrationVO),
+    insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
+    deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
+    doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? ''
+  }), []);
+
+  const loadPatients = useCallback(async (q?: string) => {
+    try {
+      const params = q ? { q } : undefined;
+      const raw = await registrationApi.getList(params);
+      console.debug('[NurseStation] fetched registrations raw:', raw);
+      let mapped = (raw || []).map(normalizeReg);
+      if (q && q.trim()) {
+        const lq = q.trim().toLowerCase();
+        mapped = mapped.filter(p => (
+          (p.patientName || '').toLowerCase().includes(lq) ||
+          (p.idCard || '').toLowerCase().includes(lq) ||
+          (p.phone || '').toLowerCase().includes(lq) ||
+          String(p.sequence || '').includes(lq)
+        ));
+      }
+      console.debug('[NurseStation] normalized registrations:', mapped);
+      setPatients(mapped);
+    } catch (err) {
+      console.error('loadPatients failed', err);
+    }
+  }, [normalizeReg]);
 
   useEffect(() => {
-    // 加载今日列表
-    registrationApi.getList().then(setPatients);
-  }, []);
+    (async () => {
+      try {
+        // 先加载挂号列表，再加载科室与医生，避免在 effect 同步体中直接调用 setState
+        await loadPatients();
+        const depts = await basicApi.getDepartments();
+        console.debug('[NurseStation] fetched departments raw:', depts);
+        const mappedDepts = depts.map((d: RawDepartment) => ({ id: d.id, name: d.name }));
+        useStore.getState().setDepartments(mappedDepts);
+        console.debug('[NurseStation] mapped departments:', mappedDepts);
+
+        // 根据首个科室（或初始 deptId）加载医生
+        const startDeptId = mappedDepts.length > 0 ? mappedDepts[0].id : initialDeptId;
+        const ds = await basicApi.getDoctors(startDeptId);
+        console.debug('[NurseStation] fetched doctors raw for dept', startDeptId, ':', ds);
+        const mappedDocs = ds.map((d: RawDoctor) => ({
+          id: d.id,
+          name: d.name || d.doctorNo || '',
+          deptId: d.departmentId ?? 0,
+          deptName: d.departmentName ?? '',
+          title: d.title || '',
+          isWorking: (typeof d.status !== 'undefined') ? d.status === 1 : true,
+          registrationFee: d.registrationFee
+        }));
+        useStore.getState().setDoctors(mappedDocs);
+        console.debug('[NurseStation] mapped doctors:', mappedDocs);
+        // 将表单的 deptId 设为 startDeptId
+        setFormData(prev => ({ ...prev, deptId: startDeptId }));
+      } catch (err) {
+        console.error('init load failed', err);
+      }
+    })();
+  }, [loadPatients]);
+
+  // 切换科室时加载对应医生
+  const handleDeptClick = async (newDeptId: number) => {
+    setFormData(prev => ({ ...prev, deptId: newDeptId }));
+    const ds = await basicApi.getDoctors(newDeptId);
+    const mappedDocs = ds.map((d: RawDoctor) => ({
+      id: d.id,
+      name: d.name || d.doctorNo || '',
+      deptId: d.departmentId ?? 0,
+      deptName: d.departmentName ?? '',
+      title: d.title || '',
+      isWorking: (typeof d.status !== 'undefined') ? d.status === 1 : true,
+      registrationFee: d.registrationFee
+    }));
+    useStore.getState().setDoctors(mappedDocs);
+  };
 
   // 3. 身份证自动识别 (模拟)
   const handleIdBlur = async () => {
     if (formData.idCard.length >= 15) {
-      const oldPatient = await registrationApi.checkPatient(formData.idCard);
-      if (oldPatient) {
-        alert(`识别到老患者：${oldPatient.name}`);
+      // 优先查询患者表
+      let result = await patientApi.findByIdCard(formData.idCard);
+      console.debug('[NurseStation] patientApi.findByIdCard result:', result);
+      if (!result) {
+        // 回退到 registrationApi.checkPatient
+        result = await registrationApi.checkPatient(formData.idCard);
+        console.debug('[NurseStation] fallback registrationApi.checkPatient result:', result);
+      }
+      if (!result) return;
+      const list = Array.isArray(result) ? result : [result];
+      if (list.length === 1) {
+        const p = list[0];
         setFormData(prev => ({
           ...prev,
-          name: oldPatient.name,
-          gender: String(oldPatient.gender),
-          age: String(oldPatient.age),
-          phone: oldPatient.phone,
-          insurance: oldPatient.insuranceType,
+          name: p.name || prev.name,
+          gender: String(p.gender ?? prev.gender),
+          age: String(p.age ?? prev.age),
+          phone: p.phone ?? prev.phone,
+          idCard: p.id_card ?? prev.idCard,
+          insurance: p.insuranceType ?? prev.insurance,
           type: '复诊'
         }));
+      } else if (list.length > 1) {
+        setOldPatients(list);
       }
     }
+  };
+
+  const handleSearchOld = async () => {
+    if (!searchOld || !searchOld.trim()) return;
+    setOldSearchStatus('loading');
+    console.debug('[NurseStation] searchOld ->', searchOld.trim());
+    try {
+      const result = await registrationApi.checkPatient(searchOld.trim());
+      console.debug('[NurseStation] checkPatient result:', result);
+      if (!result) {
+        setOldPatients([]);
+        setOldSearchStatus('not-found');
+        return;
+      }
+      const list = Array.isArray(result) ? result : [result];
+      setOldPatients(list);
+      setOldSearchStatus(list.length > 0 ? 'idle' : 'not-found');
+    } catch (err) {
+      console.error('handleSearchOld failed', err);
+      setOldPatients([]);
+      setOldSearchStatus('error');
+    }
+  };
+
+  const fillFromOld = (p: Patient) => {
+    setFormData(prev => ({
+      ...prev,
+      name: p.name || prev.name,
+      gender: String(p.gender ?? prev.gender),
+      age: String(p.age ?? prev.age),
+      phone: p.phone ?? prev.phone,
+      idCard: p.id_card ?? prev.idCard,
+      insurance: p.insuranceType ?? prev.insurance,
+      type: '复诊'
+    }));
+    setOldPatients([]);
   };
 
   // 4. 提交挂号
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.idCard || !formData.phone || !formData.doctorId) {
-      alert('请补全患者信息 (姓名、身份证、手机号、医生)');
+    // 前端验证，并在 UI 上显示错误
+    const newErrors: Record<string, string> = {};
+    if (!formData.name || !formData.name.trim()) newErrors.name = '请输入患者姓名';
+    if (!formData.idCard || formData.idCard.trim().length < 15) newErrors.idCard = '请输入有效身份证号';
+    if (!formData.phone || formData.phone.trim().length < 5) newErrors.phone = '请输入联系电话';
+    if (!formData.doctorId) newErrors.doctor = '请选择医生';
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
       return;
     }
 
     setLoading(true);
-    
+
     // 构造数据
     const payload = {
       patientName: formData.name,
       idCard: formData.idCard,
       gender: Number(formData.gender),
-      age: Number(formData.age),
+      age: Number(formData.age) || 0,
       phone: formData.phone,
       deptId: Number(formData.deptId),
       doctorId: Number(formData.doctorId),
-      regFee: 20, 
+      regFee: 20,
       insuranceType: formData.insurance,
       type: formData.type
     };
 
-    // 调试：打印发送到后端的 payload，确认字段（含 doctorId）已包含
     console.log('register payload:', payload);
 
     const res = await registrationApi.create(payload);
     setLoading(false);
 
     if (res.success && res.data) {
-      // 不再使用浏览器 alert 弹窗，改为显示页面小卡片
-      setPatients([res.data, ...patients]); // 更新列表
-      setReceipt(res.data);
+      // 归一化后更新列表与回执显示
+      const normalizeReg = (r: ReceivedRegistration): RegistrationVO => ({
+        ...(r as RegistrationVO),
+        insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
+        deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
+        doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? ''
+      });
+      const normalized = normalizeReg(res.data);
+      setPatients([normalized, ...patients]); // 更新列表
+      setReceipt(normalized);
       // 重置表单，但保留科室选择
       setFormData(prev => ({ ...prev, name: '', age: '', idCard: '', phone: '' })); 
     } else {
@@ -107,42 +256,93 @@ const NurseStation: React.FC = () => {
         </div>
         
         <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-          <form onSubmit={handleRegister} className="space-y-5">
+          <form onSubmit={handleRegister} className="space-y-4 p-2">
             {/* 1. 身份识别 */}
             <div className="space-y-2">
-              <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                <span className="w-1 h-4 bg-teal-500 rounded"></span> 身份信息
-              </label>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-bold text-slate-700 flex items-center gap-2"><span className="w-1 h-4 bg-teal-500 rounded" /> 身份信息</div>
+                <div className="text-xs text-slate-400">已注册患者请先搜索</div>
+              </div>
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  value={searchOld}
+                  onChange={e => setSearchOld(e.target.value)}
+                  placeholder="搜索老患者：姓名/身份证/手机号"
+                  className="flex-1 text-sm p-2.5 border rounded-md bg-white"
+                />
+                <button type="button" onClick={handleSearchOld} className="px-3 py-1.5 bg-slate-100 rounded">查患者</button>
+              </div>
+              {oldPatients.length > 0 && (
+                <div className="mt-2 bg-white border rounded p-2 max-h-40 overflow-auto">
+                  {oldPatients.map(p => (
+                    <div key={p.main_id} className="flex items-center justify-between py-1 border-b last:border-b-0">
+                      <div className="text-sm">
+                        <div className="font-medium">{p.name} <span className="text-xs text-slate-400">({p.id_card})</span></div>
+                        <div className="text-xs text-slate-400">{p.phone}</div>
+                      </div>
+                      <div>
+                        <button type="button" onClick={() => fillFromOld(p)} className="px-2 py-1 text-sm bg-teal-50 rounded">填充</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {oldSearchStatus === 'loading' && <div className="mt-2 text-xs text-slate-500">查询中…</div>}
+              {oldSearchStatus === 'not-found' && <div className="mt-2 text-xs text-red-500">未找到匹配的患者</div>}
+              {oldSearchStatus === 'error' && <div className="mt-2 text-xs text-red-500">查询出错，请查看控制台或网络请求</div>}
+
               <div className="relative">
                 <CreditCard className="absolute left-3 top-3 text-slate-400" size={18} />
-                <input 
-                  className="w-full pl-10 p-2.5 border rounded-lg text-sm bg-slate-50 focus:border-teal-500 outline-none font-mono"
+                <input
+                  className={`w-full pl-10 p-3 border rounded-lg text-sm outline-none transition ${errors.idCard ? 'border-red-500 bg-red-50' : 'bg-slate-50'}`}
                   placeholder="扫描或输入身份证号"
                   value={formData.idCard}
                   onChange={e => setFormData({...formData, idCard: e.target.value})}
-                  onBlur={handleIdBlur} // 失去焦点时查询老患者
+                  onFocus={() => setErrors(prev => { const c = { ...prev }; delete c.idCard; return c; })}
+                  onBlur={handleIdBlur}
                 />
+                {errors.idCard && <div className="text-xs text-red-500 mt-1">{errors.idCard}</div>}
               </div>
             </div>
 
             {/* 2. 基本信息 */}
             <div className="grid grid-cols-2 gap-3">
-              <input className="col-span-2 p-2.5 border rounded-lg text-sm" placeholder="患者姓名" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
-              <select className="p-2.5 border rounded-lg text-sm bg-white" value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})}>
+              <div className="col-span-2">
+                <input
+                  className={`w-full p-3 border rounded-lg text-sm transition ${errors.name ? 'border-red-500 bg-red-50' : 'bg-white'}`}
+                  placeholder="患者姓名"
+                  value={formData.name}
+                  onChange={e => setFormData({...formData, name: e.target.value})}
+                  onFocus={() => setErrors(prev => { const c = { ...prev }; delete c.name; return c; })}
+                />
+                {errors.name && <div className="text-xs text-red-500 mt-1">{errors.name}</div>}
+              </div>
+
+              <select className="p-3 border rounded-lg text-sm bg-white" value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})}>
                 <option value="1">男</option>
                 <option value="0">女</option>
               </select>
+
               <div className="relative">
-                <input type="number" className="w-full p-2.5 border rounded-lg text-sm" placeholder="年龄" value={formData.age} onChange={e => setFormData({...formData, age: e.target.value})} />
-                <span className="absolute right-3 top-2.5 text-xs text-slate-400">岁</span>
+                <input type="number" className="w-full p-3 border rounded-lg text-sm" placeholder="年龄" value={formData.age} onChange={e => setFormData({...formData, age: e.target.value})} />
+                <span className="absolute right-3 top-3 text-xs text-slate-400">岁</span>
               </div>
+
               <div className="col-span-2 relative">
                 <Phone className="absolute left-3 top-3 text-slate-400" size={18} />
-                <input className="w-full pl-10 p-2.5 border rounded-lg text-sm" placeholder="手机号码" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
+                <input
+                  className={`w-full pl-10 p-3 border rounded-lg text-sm transition ${errors.phone ? 'border-red-500 bg-red-50' : 'bg-white'}`}
+                  placeholder="手机号码"
+                  value={formData.phone}
+                  onChange={e => setFormData({...formData, phone: e.target.value})}
+                  onFocus={() => setErrors(prev => { const c = { ...prev }; delete c.phone; return c; })}
+                />
+                {errors.phone && <div className="text-xs text-red-500 mt-1">{errors.phone}</div>}
               </div>
+
               <div className="col-span-2 relative">
                 <ShieldCheck className="absolute left-3 top-3 text-slate-400" size={18} />
-                <select className="w-full pl-10 p-2.5 border rounded-lg text-sm bg-white" value={formData.insurance} onChange={e => setFormData({...formData, insurance: e.target.value})}>
+                <select className="w-full pl-10 p-3 border rounded-lg text-sm bg-white" value={formData.insurance} onChange={e => setFormData({...formData, insurance: e.target.value})}>
                   <option value="自费">自费</option>
                   <option value="职工医保">职工医保</option>
                   <option value="居民医保">居民医保</option>
@@ -150,66 +350,66 @@ const NurseStation: React.FC = () => {
               </div>
             </div>
 
-            <div className="border-t border-dashed my-2"></div>
+            <div className="border-t border-dashed my-2" />
 
             {/* 3. 挂号选项 */}
             <div className="space-y-3">
-              <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                <span className="w-1 h-4 bg-blue-500 rounded"></span> 挂号信息
-              </label>
-              
-              {/* 科室选择 */}
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-bold text-slate-700 flex items-center gap-2"><span className="w-1 h-4 bg-blue-500 rounded" /> 挂号信息</div>
+                <div className="text-xs text-slate-400">选择科室与医生</div>
+              </div>
+
               <div className="flex gap-2 overflow-x-auto pb-1">
                 {departments.map(dept => (
                   <button 
                     key={dept.id} 
                     type="button"
-                    onClick={() => {
-                          const newDeptId = dept.id;
-                          // 固定医生时不改变 doctorId，只改变科室选择
-                          setFormData(prev => ({ ...prev, deptId: newDeptId }));
-                        }}
+                    onClick={() => handleDeptClick(dept.id)}
                     className={`px-3 py-1.5 text-xs rounded-lg border whitespace-nowrap transition-colors ${Number(formData.deptId) === dept.id ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                   >
                     {dept.name}
                   </button>
                 ))}
               </div>
-              
-              {/* 医生选择 */}
-              <div className="grid grid-cols-1 gap-2 max-h-32 overflow-y-auto">
+
+              <div className="grid grid-cols-2 gap-3 max-h-56 overflow-y-auto">
                 {activeDoctors.length > 0 ? (
                   activeDoctors.map(doc => (
-                  <div 
+                  <div
                     key={doc.id}
-                    // 如果固定医生，则禁用点击
-                    onClick={FIXED_DOCTOR_ID ? undefined : () => setFormData({...formData, doctorId: String(doc.id)})}
-                    className={`p-3 border rounded-xl ${FIXED_DOCTOR_ID ? 'cursor-not-allowed' : 'cursor-pointer'} flex justify-between items-center transition-all ${String(formData.doctorId) === String(doc.id) ? 'bg-teal-50 border-teal-500 shadow-sm' : 'bg-white border-slate-200 hover:border-teal-300'}`}
+                    onClick={FIXED_DOCTOR_ID ? undefined : () => { setFormData(prev => ({...prev, doctorId: String(doc.id)})); setErrors(prev => { const c = {...prev}; delete c.doctor; return c; }); }}
+                    className={`p-3 border rounded-xl ${FIXED_DOCTOR_ID ? 'cursor-not-allowed' : 'cursor-pointer'} transition-all ${String(formData.doctorId) === String(doc.id) ? 'bg-teal-50 border-teal-500 shadow-sm' : 'bg-white border-slate-200 hover:border-teal-300'}`}
                   >
-                    <div className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${String(formData.doctorId) === String(doc.id) ? 'bg-teal-200 text-teal-800' : 'bg-slate-100 text-slate-500'}`}>
-                        {doc.name[0]}
+                    <div className="flex items-start gap-3">
+                      <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold ${String(formData.doctorId) === String(doc.id) ? 'bg-teal-200 text-teal-800' : 'bg-slate-100 text-slate-500'}`}>
+                        {doc.name?.[0] ?? '-'}
                       </div>
-                      <div>
-                        <div className="text-sm font-bold text-slate-700">{doc.name}</div>
-                        <div className="text-xs text-slate-500">{doc.title}</div>
+                      <div className="flex-1">
+                        <div className="text-sm font-bold text-slate-800">{doc.name}</div>
+                        <div className="text-xs text-slate-500">{doc.title} • {doc.deptName}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm font-medium text-slate-700">{doc.registrationFee ? `¥${doc.registrationFee}` : '¥--'}</div>
+                        <div className={`text-xs mt-1 ${doc.isWorking ? 'text-green-600' : 'text-red-400'}`}>{doc.isWorking ? '在岗' : '停诊'}</div>
                       </div>
                     </div>
-                    {String(formData.doctorId) === String(doc.id) && <CheckCircle size={18} className="text-teal-600" />}
                   </div>
                 ))) : (
-                  <div className="text-center text-xs text-slate-400 py-4">该科室今日无医生排班</div>
+                  <div className="col-span-2 text-center text-xs text-slate-400 py-4">该科室暂无医生</div>
                 )}
               </div>
+              {errors.doctor && <div className="text-xs text-red-500">{errors.doctor}</div>}
             </div>
 
-            <button 
-              type="submit" 
-              disabled={loading}
-              className={`w-full py-3.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-bold flex justify-center items-center gap-2 mt-4 shadow-lg shadow-teal-200 transition-all ${loading ? 'opacity-70' : 'active:scale-[0.98]'}`}
-            >
-              {loading ? '提交中...' : <><ClipboardList size={20}/> 确认挂号</>}
-            </button>
+            <div className="pt-2">
+              <button 
+                type="submit" 
+                disabled={loading}
+                className={`w-full py-3.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-bold flex justify-center items-center gap-2 shadow-lg transition ${loading ? 'opacity-70' : 'active:scale-[0.98]'}`}
+              >
+                {loading ? '提交中...' : <><ClipboardList size={20}/> 确认挂号</>}
+              </button>
+            </div>
           </form>
         </div>
       </div>
@@ -221,7 +421,16 @@ const NurseStation: React.FC = () => {
             <Activity className="text-blue-500" size={24} />
             今日挂号列表
           </div>
-          <div className="text-xs bg-blue-100 text-blue-700 px-3 py-1 rounded-full font-bold">Total: {patients.length}</div>
+          <div className="flex items-center gap-2">
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="搜索 姓名/身份证/手机号"
+              className="text-sm p-2 border rounded-md"
+            />
+            <button onClick={() => loadPatients(search)} className="ml-2 px-3 py-1 text-sm bg-slate-100 rounded">搜索</button>
+            <div className="text-xs bg-blue-100 text-blue-700 px-3 py-1 rounded-full font-bold ml-3">Total: {patients.length}</div>
+          </div>
         </div>
         <div className="flex-1 overflow-auto">
           <table className="w-full text-sm text-left">
