@@ -5,6 +5,8 @@ export interface User {
   role: 'doctor' | 'nurse' | 'admin' | 'pharmacy';
   name: string;
   dept: string;
+  userId?: number;
+  relatedId?: number;
 }
 
 // 医生信息
@@ -160,12 +162,12 @@ export interface Drug {
   isPrescription: number;  // is_prescription (0/1)
   dbStatus: number;        // status (1=启用, 0=停用)
 
-  batchNumber?: string;    
-  productionDate?: string; 
-  expiryDate?: string;     
-  
+  batchNumber?: string;
+  productionDate?: string;
+  expiryDate?: string;
+
   // UI 辅助状态
-  uiStatus?: 'normal' | 'low_stock' | 'expired'; 
+  uiStatus?: 'normal' | 'low_stock' | 'expired';
 }
 
 // his_medical_record

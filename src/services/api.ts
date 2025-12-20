@@ -1,5 +1,5 @@
 // src/services/api.ts
-import axios, { type AxiosError, type AxiosRequestConfig } from 'axios';
+import axios, { type AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig, type AxiosInstance } from 'axios';
 import { getToken, setToken } from '../services/authStorage';
 import { useStore } from '../store/store';
 import * as logger from './logger';
@@ -33,13 +33,20 @@ export type RawDepartment = {
 const ENV_BASE = (import.meta.env.VITE_API_BASE as string) || '';
 const API_BASE_URL = ENV_BASE || '/api';
 
+// 业务接口实例 (带 /api 前缀)
 export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 5000,
 });
 
-// 在每次请求前自动注入 Authorization header
-api.interceptors.request.use((config) => {
+// 认证接口实例 (不带 /api 前缀)
+export const authInstance = axios.create({
+  baseURL: '/',
+  timeout: 5000,
+});
+
+// 统一请求拦截器
+const requestInterceptor = (config: InternalAxiosRequestConfig) => {
   try {
     const token = getToken();
     if (token && config && config.headers) {
@@ -49,7 +56,10 @@ api.interceptors.request.use((config) => {
     // ignore
   }
   return config;
-});
+};
+
+api.interceptors.request.use(requestInterceptor);
+authInstance.interceptors.request.use(requestInterceptor);
 
 // 401 刷新队列：避免并发刷新导致重复登出/重复刷新
 let isRefreshing = false;
@@ -62,80 +72,77 @@ function onRefreshed(token: string | null) {
   refreshSubscribers = [];
 }
 
-// 全局响应错误拦截：对特定状态码给出友好提示，并在 401 时尝试刷新
-api.interceptors.response.use(
-  (response) => response,
-  (error: AxiosError) => {
-    try {
-      const status = error.response?.status;
-      const url = (error.config as AxiosRequestConfig | undefined)?.url ?? '';
-      const isLoginRequest = typeof url === 'string' && url.includes('/auth/login');
+// 全局响应错误拦截
+const responseErrorInterceptor = (instance: AxiosInstance) => (error: AxiosError) => {
+  try {
+    const status = error.response?.status;
+    const url = (error.config as AxiosRequestConfig | undefined)?.url ?? '';
+    const isLoginRequest = typeof url === 'string' && url.includes('/auth/login');
 
-      // 对 403 和 404 统一记录为系统错误（由页面决定是否展示提示），避免重复通知
-      if (!isLoginRequest && (status === 403 || status === 404)) {
-        logger.error('api.interceptor', error);
-      }
+    if (!isLoginRequest && (status === 403 || status === 404)) {
+      logger.error('api.interceptor', error);
+    }
 
-      // 处理 401：尝试刷新 token 并重试原请求
-      if (status === 401 && !isLoginRequest) {
-        const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
-        if (!originalRequest) return Promise.reject(error);
-        if (originalRequest._retry) return Promise.reject(error);
-        originalRequest._retry = true;
+    if (status === 401 && !isLoginRequest) {
+      const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
+      if (!originalRequest) return Promise.reject(error);
+      if (originalRequest._retry) return Promise.reject(error);
+      originalRequest._retry = true;
 
-        if (isRefreshing) {
-          return new Promise((resolve, reject) => {
-            subscribeTokenRefresh((token) => {
-              if (token) {
-                if (originalRequest.headers) (originalRequest.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
-                resolve(api(originalRequest));
-              } else {
-                reject(error);
-              }
-            });
-          });
-        }
-
-        isRefreshing = true;
+      if (isRefreshing) {
         return new Promise((resolve, reject) => {
-          (async () => {
-            try {
-              // 尝试刷新 token（后端需实现 /auth/refresh 或等效接口）
-              const refreshRes = await api.post('/auth/refresh');
-              const norm = normalizeResponse<{ token?: string }>(refreshRes?.data);
-              const newToken = norm.data?.token ?? null;
-              if (newToken) {
-                setToken(newToken);
-                try {
-                  useStore.getState().setToken(newToken);
-                } catch (e) {
-                  logger.warn('useStore update failed after refresh', e);
-                }
-                onRefreshed(newToken);
-                if (originalRequest.headers) (originalRequest.headers as Record<string, string>)['Authorization'] = `Bearer ${newToken}`;
-                resolve(api(originalRequest));
-              } else {
-                onRefreshed(null);
-                try { useStore.getState().logout(); } catch (e) { logger.warn('logout failed after refresh failure', e); }
-                reject(error);
-              }
-            } catch (e) {
-              onRefreshed(null);
-              try { useStore.getState().logout(); } catch (err) { logger.warn('logout failed after refresh exception', err); }
-              reject(e);
-            } finally {
-              isRefreshing = false;
+          subscribeTokenRefresh((token) => {
+            if (token) {
+              if (originalRequest.headers) (originalRequest.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+              resolve(instance(originalRequest));
+            } else {
+              reject(error);
             }
-          })();
+          });
         });
       }
-    } catch (e) {
-      // 忽略拦截器内部错误，但记录以便排查
-      logger.error('api.interceptor', e);
+
+      isRefreshing = true;
+      return new Promise((resolve, reject) => {
+        (async () => {
+          try {
+            // 刷新接口通常在 auth 下
+            const refreshRes = await authInstance.post('/auth/refresh');
+            const norm = normalizeResponse<{ token?: string }>(refreshRes?.data);
+            const newToken = norm.data?.token ?? null;
+            if (newToken) {
+              setToken(newToken);
+              try {
+                useStore.getState().setToken(newToken);
+              } catch (e) {
+                logger.warn('useStore update failed after refresh', e);
+              }
+              onRefreshed(newToken);
+              if (originalRequest.headers) (originalRequest.headers as Record<string, string>)['Authorization'] = `Bearer ${newToken}`;
+              resolve(instance(originalRequest));
+            } else {
+              onRefreshed(null);
+              try { useStore.getState().logout(); } catch (e) { logger.warn('logout failed after refresh failure', e); }
+              reject(error);
+            }
+          } catch (e) {
+            onRefreshed(null);
+            try { useStore.getState().logout(); } catch (err) { logger.warn('logout failed after refresh exception', err); }
+            reject(e);
+          } finally {
+            isRefreshing = false;
+          }
+        })();
+      });
     }
-    return Promise.reject(error);
+  } catch (e) {
+    logger.error('api.interceptor', e);
   }
-);
+  return Promise.reject(error);
+};
+
+api.interceptors.response.use(res => res, responseErrorInterceptor(api));
+authInstance.interceptors.response.use(res => res, responseErrorInterceptor(authInstance));
 
 // 从后端响应数据中安全提取 message 字段
 function extractMessageFromData(data: unknown): string | undefined {
@@ -199,7 +206,7 @@ export type LoginVO = { token: string; role?: string; realName?: string; userId?
 export const authApi = {
   login: async (payload: LoginRequest): Promise<{ success: boolean; data?: LoginVO; message?: string }> => {
     try {
-      const res = await api.post('/auth/login', payload);
+      const res = await authInstance.post('/auth/login', payload);
       const norm = normalizeResponse<LoginVO>(res?.data);
       return { success: norm.success, data: norm.data, message: norm.message };
     } catch (err: unknown) {
@@ -211,7 +218,7 @@ export const authApi = {
 
   logout: async (): Promise<{ success: boolean; message?: string }> => {
     try {
-      const res = await api.post('/auth/logout');
+      const res = await authInstance.post('/auth/logout');
       const norm = normalizeResponse<unknown>(res?.data);
       return { success: norm.success, message: norm.message };
     } catch (err: unknown) {
@@ -223,7 +230,7 @@ export const authApi = {
 
   validate: async (): Promise<boolean> => {
     try {
-      const res = await api.get('/auth/validate');
+      const res = await authInstance.get('/auth/validate');
       const norm = normalizeResponse<unknown>(res?.data);
       return Boolean(norm.data);
     } catch (err: unknown) {
@@ -279,6 +286,40 @@ export const registrationApi = {
       const e = err as AxiosError;
       logApiError('registrationApi.checkPatient', e);
       return null;
+    }
+  }
+  ,
+  // 4. 取消挂号
+  cancel: async (id: number, reason?: string): Promise<{ success: boolean; message?: string }> => {
+    try {
+      // 后端要求 application/x-www-form-urlencoded，使用 URLSearchParams
+      const body = new URLSearchParams();
+      if (reason) body.append('reason', reason);
+      const res = await api.put(`/registrations/${id}/cancel`, body.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      const norm = normalizeResponse<unknown>(res?.data);
+      return { success: Boolean(norm.success ?? true), message: norm.message };
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('registrationApi.cancel', e);
+      return { success: false, message: mapStatusToMessage(e) || '取消失败' };
+    }
+  }
+  ,
+  // 5. 挂号退费
+  refund: async (id: number): Promise<{ success: boolean; message?: string }> => {
+    try {
+      // 后端要求 application/x-www-form-urlencoded，即使无 body，也传空字符串
+      const res = await api.put(`/registrations/${id}/refund`, '', {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      const norm = normalizeResponse<unknown>(res?.data);
+      return { success: Boolean(norm.success ?? true), message: norm.message };
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('registrationApi.refund', e);
+      return { success: false, message: mapStatusToMessage(e) || '退费失败' };
     }
   }
 };
@@ -486,7 +527,9 @@ export const doctorApi = {
   // 获取医生候诊列表，showAll=true 返回科室全部候诊
   getWaitingList: async (showAll = false, config?: AxiosRequestConfig): Promise<RegistrationVO[]> => {
     try {
-      const res = await api.get(`/doctor/waiting-list`, { ...(config ?? {}), params: { showAll } });
+      // 合并 config.params（例如 doctorId/deptId）和 showAll 标志
+      const params = { ...(config?.params ?? {}), showAll } as Record<string, unknown>;
+      const res = await api.get(`/doctor/waiting-list`, { ...(config ?? {}), params });
       const norm = normalizeResponse<RegistrationVO[]>(res?.data);
       return norm.data || [];
     } catch (err: unknown) {

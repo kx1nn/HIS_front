@@ -14,7 +14,11 @@
 
 /* 浏览器兼容性：防止移动设备放大字体 */
 html,
-body {
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }

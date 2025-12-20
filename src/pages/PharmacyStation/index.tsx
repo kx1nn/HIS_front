@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
-  Package, Search, Plus, AlertTriangle, 
-  CheckCircle, Filter, Activity, Clock 
+  Package, Search, AlertTriangle, 
+  CheckCircle, Filter, Activity, Clock, LogOut, User
 } from 'lucide-react';
 import { pharmacyApi, isCanceledError } from '../../services/api';
 import { useStore } from '../../store/store';
@@ -9,35 +10,59 @@ import * as logger from '../../services/logger';
 import type { Drug, PrescriptionVO, PrescriptionItemVO } from '../../types';
 
 const PharmacyStation: React.FC = () => {
+  const { user, logout } = useStore();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<'inventory' | 'expiry' | 'dispense'>('dispense');
   const [drugs, setDrugs] = useState<Drug[]>([]);
   const [prescriptions, setPrescriptions] = useState<PrescriptionVO[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [fetchStatus, setFetchStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+
+  // helper: normalize various backend shapes to array
+  const normalizeToArray = React.useCallback(<T,>(raw: unknown): T[] => {
+    if (Array.isArray(raw)) return raw as T[];
+    if (raw && typeof raw === 'object') {
+      const r = raw as Record<string, unknown>;
+      if (Array.isArray(r.data)) return r.data as T[];
+      if (Array.isArray(r.items)) return r.items as T[];
+    }
+    return [];
+  }, []);
 
   useEffect(() => {
     let mounted = true;
     const controller = new AbortController();
     const fetch = async () => {
+      setFetchStatus('loading');
       if (!mounted) return;
       try {
         if (activeTab === 'inventory' || activeTab === 'expiry') {
           const data = await pharmacyApi.getDrugs(searchTerm, undefined, { signal: controller.signal });
+          logger.debug('PharmacyStation.getDrugs raw:', data);
           if (!mounted) return;
-          setDrugs(data);
+          const list = normalizeToArray<Drug>(data);
+          logger.debug('PharmacyStation.getDrugs normalized length:', list.length);
+          setDrugs(list);
+          setFetchStatus('ok');
         } else {
           const data = await pharmacyApi.getPendingPrescriptions({ signal: controller.signal });
+          logger.debug('PharmacyStation.getPendingPrescriptions raw:', data);
           if (!mounted) return;
-          setPrescriptions(data);
+          const list = normalizeToArray<PrescriptionVO>(data);
+          logger.debug('PharmacyStation.getPendingPrescriptions normalized length:', list.length);
+          setPrescriptions(list);
+          setFetchStatus('ok');
         }
       } catch (e) {
         if (isCanceledError(e)) return;
         logger.warn('PharmacyStation.fetch', e);
+        setFetchStatus('error');
       }
     };
 
     void fetch();
     return () => { mounted = false; controller.abort(); };
-  }, [activeTab, searchTerm]);
+  }, [activeTab, searchTerm, normalizeToArray]);
 
   const handleDispense = async (id: number) => {
     if (confirm('确认完成发药？库存将自动扣减。')) {
@@ -45,7 +70,8 @@ const PharmacyStation: React.FC = () => {
       // 重新加载待发药处方
       try {
         const data = await pharmacyApi.getPendingPrescriptions();
-        setPrescriptions(data);
+        const list = normalizeToArray<PrescriptionVO>(data);
+        setPrescriptions(list);
       } catch {
         // ignore
       }
@@ -67,10 +93,36 @@ const PharmacyStation: React.FC = () => {
 
   return (
     <div className="flex h-full flex-col bg-slate-50 overflow-hidden">
-      <div className="bg-white border-b px-6 pt-4 flex gap-6 shadow-sm z-10">
-        <button onClick={() => setActiveTab('dispense')} className={`pb-4 px-2 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${activeTab === 'dispense' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}><Activity size={18}/> 发药作业 {prescriptions.length > 0 && <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">{prescriptions.length}</span>}</button>
-        <button onClick={() => setActiveTab('inventory')} className={`pb-4 px-2 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${activeTab === 'inventory' ? 'border-teal-600 text-teal-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}><Package size={18}/> 药品信息</button>
-        <button onClick={() => setActiveTab('expiry')} className={`pb-4 px-2 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${activeTab === 'expiry' ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}><AlertTriangle size={18}/> 效期预警</button>
+      <div className="bg-white border-b px-6 pt-4 flex justify-between items-center shadow-sm z-10">
+        <div className="flex gap-6">
+          <button onClick={() => setActiveTab('dispense')} className={`pb-4 px-2 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${activeTab === 'dispense' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}><Activity size={18}/> 发药作业 {prescriptions.length > 0 && <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">{prescriptions.length}</span>}</button>
+          <button onClick={() => setActiveTab('inventory')} className={`pb-4 px-2 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${activeTab === 'inventory' ? 'border-teal-600 text-teal-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}><Package size={18}/> 药品信息</button>
+          <button onClick={() => setActiveTab('expiry')} className={`pb-4 px-2 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${activeTab === 'expiry' ? 'border-orange-500 text-orange-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}><AlertTriangle size={18}/> 效期预警</button>
+        </div>
+        <div className="flex items-center gap-4 mb-4">
+          <button 
+            onClick={() => { logout(); navigate('/login'); }}
+            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2 text-sm font-medium"
+            title="退出登录"
+          >
+            <LogOut size={18} />
+            退出系统
+          </button>
+        </div>
+      </div>
+
+      {/* Debug banner: shows fetch status and counts to help diagnose empty/304 issues */}
+      <div className="px-6 pt-2">
+        <div className="inline-flex items-center gap-3 px-3 py-1 bg-yellow-50 border border-yellow-100 text-yellow-800 text-xs rounded">
+          <div className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-100 rounded-md text-[11px] font-medium flex items-center gap-1">
+            <User size={12} />
+            {user?.name}
+          </div>
+          <span>当前模块: <strong className="text-slate-700">{activeTab === 'dispense' ? '发药作业' : activeTab === 'inventory' ? '药品信息' : '效期预警'}</strong></span>
+          <span>待发处方: <strong className="text-slate-700">{prescriptions.length}</strong></span>
+          <span>药品数量: <strong className="text-slate-700">{drugs.length}</strong></span>
+          <span>数据状态: <strong className={`ml-1 ${fetchStatus === 'ok' ? 'text-green-700' : fetchStatus === 'loading' ? 'text-blue-700' : fetchStatus === 'error' ? 'text-red-700' : 'text-slate-500'}`}>{fetchStatus}</strong></span>
+        </div>
       </div>
 
       <div className="flex-1 p-6 overflow-hidden">
@@ -107,16 +159,16 @@ const PharmacyStation: React.FC = () => {
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col">
             <div className="p-4 border-b flex justify-between items-center">
               <div className="relative w-64"><Search size={16} className="absolute left-3 top-2.5 text-slate-400"/><input className="w-full pl-9 p-2 border rounded-lg text-sm focus:border-teal-500 outline-none" placeholder="搜索药品名称/编码..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} onKeyDown={async e => {
-                if (e.key === 'Enter') {
-                  try {
-                    const data = await pharmacyApi.getDrugs(searchTerm);
-                    setDrugs(data);
-                  } catch {
-                    // ignore
-                  }
-                }
-              }}/></div>
-              <button className="bg-teal-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-teal-700"><Plus size={16}/> 新增药品</button>
+                          if (e.key === 'Enter') {
+                            try {
+                              const data = await pharmacyApi.getDrugs(searchTerm);
+                              const list = normalizeToArray<Drug>(data);
+                              setDrugs(list);
+                            } catch {
+                              // ignore
+                            }
+                          }
+                }}/></div>
             </div>
             <div className="flex-1 overflow-auto">
               <table className="w-full text-sm text-left"><thead className="bg-slate-50 text-slate-500 sticky top-0 z-10"><tr><th className="p-4">编码</th><th className="p-4">药品名称</th><th className="p-4">规格/单位</th><th className="p-4">厂家</th><th className="p-4">单价</th><th className="p-4">库存</th><th className="p-4">状态</th></tr></thead>
@@ -169,4 +221,12 @@ const PharmacyStation: React.FC = () => {
   );
 };
 
-export default PharmacyStation;
+import ErrorBoundary from '../../components/ErrorBoundary';
+
+const WrappedPharmacyStation: React.FC = () => (
+  <ErrorBoundary>
+    <PharmacyStation />
+  </ErrorBoundary>
+);
+
+export default WrappedPharmacyStation;

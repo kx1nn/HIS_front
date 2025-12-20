@@ -1,6 +1,7 @@
 // src/pages/NurseStation/index.tsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { ClipboardList, Search, Plus, Activity, CreditCard, Phone, ShieldCheck } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { ClipboardList, Search, Plus, Activity, CreditCard, Phone, ShieldCheck, LogOut, User as UserIcon } from 'lucide-react';
 import { useStore } from '../../store/store';
 import { basicApi, registrationApi, patientApi, logApiError, isCanceledError } from '../../services/api';
 import * as logger from '../../services/logger';
@@ -8,7 +9,8 @@ import type { RawDoctor, RawDepartment } from '../../services/api';
 import type { RegistrationVO, Patient } from '../../types';
 
 const NurseStation: React.FC = () => {
-  const { doctors, departments, user } = useStore();
+  const { doctors, departments, user, logout } = useStore();
+  const navigate = useNavigate();
   
   const [loading, setLoading] = useState(false);
   const [patients, setPatients] = useState<RegistrationVO[]>([]);
@@ -43,6 +45,9 @@ const NurseStation: React.FC = () => {
   const [oldPatients, setOldPatients] = useState<Patient[]>([]);
   const [oldSearchStatus, setOldSearchStatus] = useState<'idle' | 'loading' | 'not-found' | 'error'>('idle');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [showPaymentPrompt, setShowPaymentPrompt] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState<number>(0);
+  const [refundNotice, setRefundNotice] = useState<{ visible: boolean; message: string }>({ visible: false, message: '' });
 
   const normalizeReg = useCallback((r: ReceivedRegistration): RegistrationVO => ({
     ...(r as RegistrationVO),
@@ -74,6 +79,32 @@ const NurseStation: React.FC = () => {
     }
   }, [normalizeReg]);
 
+  // 取消挂号（右键触发）
+  const handleCancelRegistration = async (e: React.MouseEvent, regId?: number) => {
+    e.preventDefault();
+    if (!regId) return;
+    const ok = confirm('确认要取消该挂号吗？此操作会将状态设为已取消。');
+    if (!ok) return;
+    const reason = prompt('请输入取消原因（可选）') || undefined;
+    const res = await registrationApi.cancel(regId, reason);
+    if (res.success) {
+      useStore.getState().notify('取消成功', 'success');
+      // 同步触发退费请求（退号同时进行退费）
+      const ref = await registrationApi.refund(regId);
+      if (ref.success) {
+        setRefundNotice({ visible: true, message: '退号成功，挂号费已返回原账号' });
+      } else {
+        setRefundNotice({ visible: true, message: '退号成功，但退费失败：' + (ref.message ?? '') });
+      }
+      // 删除本地列表中的该项
+      setPatients(prev => prev.filter(p => p.id !== regId));
+      // 自动隐藏提示
+      setTimeout(() => setRefundNotice({ visible: false, message: '' }), 3000);
+    } else {
+      useStore.getState().notify('取消失败: ' + (res.message ?? ''), 'error');
+    }
+  };
+
   useEffect(() => {
     const controller = new AbortController();
     (async () => {
@@ -101,8 +132,8 @@ const NurseStation: React.FC = () => {
         }));
         useStore.getState().setDoctors(mappedDocs);
         logger.debug('[NurseStation] mapped doctors:', mappedDocs);
-        // 将表单的 deptId 设为 startDeptId
-        setFormData(prev => ({ ...prev, deptId: startDeptId }));
+        // 将表单的 deptId 设为 startDeptId，并清空医生选择
+        setFormData(prev => ({ ...prev, deptId: startDeptId, doctorId: '' }));
       } catch (err) {
         if (isCanceledError(err)) return;
         logApiError('NurseStation.init', err);
@@ -113,56 +144,75 @@ const NurseStation: React.FC = () => {
 
   // 切换科室时加载对应医生
   const handleDeptClick = async (newDeptId: number) => {
-    setFormData(prev => ({ ...prev, deptId: newDeptId }));
+    setFormData(prev => ({ ...prev, deptId: newDeptId, doctorId: '' }));
     const controller = new AbortController();
-    const ds = await basicApi.getDoctors(newDeptId, { signal: controller.signal });
-    const mappedDocs = ds.map((d: RawDoctor) => ({
-      id: d.id,
-      name: d.name || d.doctorNo || '',
-      deptId: d.departmentId ?? 0,
-      deptName: d.departmentName ?? '',
-      title: d.title || '',
-      isWorking: (typeof d.status !== 'undefined') ? d.status === 1 : true,
-      registrationFee: d.registrationFee
-    }));
-    useStore.getState().setDoctors(mappedDocs);
+    try {
+      const ds = await basicApi.getDoctors(newDeptId, { signal: controller.signal });
+      const mappedDocs = ds.map((d: RawDoctor) => ({
+        id: d.id,
+        name: d.name || d.doctorNo || '',
+        deptId: d.departmentId ?? 0,
+        deptName: d.departmentName ?? '',
+        title: d.title || '',
+        isWorking: (typeof d.status !== 'undefined') ? d.status === 1 : true,
+        registrationFee: d.registrationFee
+      }));
+      useStore.getState().setDoctors(mappedDocs);
+    } catch (err) {
+      if (isCanceledError(err)) return;
+      logApiError('NurseStation.handleDeptClick', err);
+    }
   };
 
-  // 3. 身份证自动识别 (模拟)
+  // 3. 身份证自动识别
   const handleIdBlur = async () => {
     if (formData.idCard.length >= 15) {
       // 优先查询患者表
       const controller = new AbortController();
-      let result = await patientApi.findByIdCard(formData.idCard, { signal: controller.signal });
-      logger.debug('[NurseStation] patientApi.findByIdCard result:', result);
-      if (!result) {
-        // 回退到 registrationApi.checkPatient
-        result = await registrationApi.checkPatient(formData.idCard, { signal: controller.signal });
-        logger.debug('[NurseStation] fallback registrationApi.checkPatient result:', result);
-      }
-      if (!result) return;
-      const list = Array.isArray(result) ? result : [result];
-      if (list.length === 1) {
-        const p = list[0];
-        setFormData(prev => ({
-          ...prev,
-          name: p.name || prev.name,
-          gender: String(p.gender ?? prev.gender),
-          age: String(p.age ?? prev.age),
-          phone: p.phone ?? prev.phone,
-          idCard: p.id_card ?? prev.idCard,
-          insurance: p.insuranceType ?? prev.insurance,
-          type: '复诊'
-        }));
-      } else if (list.length > 1) {
-        setOldPatients(list);
+      try {
+        let result = await patientApi.findByIdCard(formData.idCard, { signal: controller.signal });
+        logger.debug('[NurseStation] patientApi.findByIdCard result:', result);
+        if (!result) {
+          // 回退到 registrationApi.checkPatient
+          result = await registrationApi.checkPatient(formData.idCard, { signal: controller.signal });
+          logger.debug('[NurseStation] fallback registrationApi.checkPatient result:', result);
+        }
+        if (!result) return;
+        
+        const list = Array.isArray(result) ? result : [result];
+        if (list.length > 0) {
+          setErrors({}); // 查到患者了，清除之前的验证错误
+          if (list.length === 1) {
+            const p = list[0];
+            setFormData(prev => ({
+              ...prev,
+              name: p.name || prev.name,
+              gender: String(p.gender ?? prev.gender),
+              age: String(p.age ?? prev.age),
+              phone: p.phone ?? prev.phone,
+              idCard: p.id_card ?? prev.idCard,
+              insurance: p.insuranceType ?? prev.insurance,
+              type: '复诊'
+            }));
+          } else {
+            setOldPatients(list);
+          }
+        }
+      } catch (err) {
+        if (isCanceledError(err)) return;
+        logApiError('NurseStation.handleIdBlur', err);
       }
     }
   };
 
   const handleSearchOld = async () => {
-    if (!searchOld || !searchOld.trim()) return;
+    if (!searchOld || !searchOld.trim()) {
+      setOldSearchStatus('idle');
+      setOldPatients([]);
+      return;
+    }
     setOldSearchStatus('loading');
+    setErrors({}); // 清除之前的验证错误，响应用户“查询后不需要显示输入有效的身份信息”的需求
     logger.debug('[NurseStation] searchOld ->', searchOld.trim());
     try {
       const controller = new AbortController();
@@ -229,10 +279,15 @@ const NurseStation: React.FC = () => {
 
     logger.debug('register payload:', payload);
 
-    const res = await registrationApi.create(payload);
-    setLoading(false);
+    // 显示手机缴费提示卡片，三秒后继续挂号请求并显示回执
+    setPaymentAmount(payload.regFee);
+    setShowPaymentPrompt(true);
+    setTimeout(async () => {
+      setShowPaymentPrompt(false);
+      const res = await registrationApi.create(payload);
+      setLoading(false);
 
-    if (res.success && res.data) {
+      if (res.success && res.data) {
       // 归一化后更新列表与回执显示
       const normalizeReg = (r: ReceivedRegistration): RegistrationVO => ({
         ...(r as RegistrationVO),
@@ -245,22 +300,38 @@ const NurseStation: React.FC = () => {
       setReceipt(normalized);
       // 重置表单，但保留科室选择
       setFormData(prev => ({ ...prev, name: '', age: '', idCard: '', phone: '' })); 
-    } else {
-      useStore.getState().notify('挂号失败: ' + (res.message ?? '未知错误'), 'error');
-    }
+      } else {
+        useStore.getState().notify('挂号失败: ' + (res.message ?? '未知错误'), 'error');
+      }
+    }, 3000);
   };
 
   return (
     <>
     <div className="flex h-full gap-4 p-4 bg-slate-50 overflow-hidden">
       {/* --- 左侧：挂号表单 --- */}
-      <div className="w-105 bg-white rounded-xl shadow-sm flex flex-col border border-slate-200">
-        <div className="p-5 border-b bg-linear-to-r from-teal-50 to-white flex items-center gap-3">
-          <div className="p-2 bg-teal-100 text-teal-600 rounded-lg"><Plus size={20} /></div>
-          <div>
-            <h2 className="font-bold text-slate-800 text-lg">挂号建档</h2>
-            <p className="text-xs text-slate-400">操作员: {user?.name}</p>
+      <div className="w-[420px] bg-white rounded-xl shadow-sm flex flex-col border border-slate-200">
+        <div className="p-5 border-b bg-linear-to-r from-teal-50 to-white flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-teal-100 text-teal-600 rounded-lg"><Plus size={20} /></div>
+            <div>
+              <h2 className="font-bold text-slate-800 text-lg">挂号建档</h2>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="text-[10px] text-slate-400">操作员</span>
+                <div className="px-2 py-0.5 bg-teal-50 text-teal-700 border border-teal-100 rounded-md text-[11px] font-medium flex items-center gap-1">
+                  <UserIcon size={10} />
+                  {user?.name}
+                </div>
+              </div>
+            </div>
           </div>
+          <button 
+            onClick={() => { logout(); navigate('/login'); }}
+            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+            title="退出登录"
+          >
+            <LogOut size={20} />
+          </button>
         </div>
         
         <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
@@ -274,7 +345,11 @@ const NurseStation: React.FC = () => {
               <div className="flex items-center gap-2 mt-1">
                 <input
                   value={searchOld}
-                  onChange={e => setSearchOld(e.target.value)}
+                  onChange={e => {
+                    setSearchOld(e.target.value);
+                    if (oldSearchStatus !== 'idle') setOldSearchStatus('idle');
+                  }}
+                  onKeyDown={e => e.key === 'Enter' && handleSearchOld()}
                   placeholder="搜索老患者：姓名/身份证/手机号"
                   className="flex-1 text-sm p-2.5 border rounded-md bg-white"
                 />
@@ -433,6 +508,7 @@ const NurseStation: React.FC = () => {
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && loadPatients(search)}
               placeholder="搜索 姓名/身份证/手机号"
               className="text-sm p-2 border rounded-md"
             />
@@ -454,7 +530,7 @@ const NurseStation: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {patients.map(p => (
-                <tr key={p.id} className="hover:bg-slate-50 transition-colors">
+                <tr key={p.id} className="hover:bg-slate-50 transition-colors" onContextMenu={e => handleCancelRegistration(e, p.id)}>
                   <td className="p-4 pl-6">
                     <span className="font-mono font-bold text-slate-700 bg-slate-100 px-2 py-1 rounded">{p.sequence}号</span>
                   </td>
@@ -529,6 +605,25 @@ const NurseStation: React.FC = () => {
             >打印小卡</button>
             <button onClick={() => setReceipt(null)} className="flex-1 py-2 text-sm border rounded-lg">关闭</button>
           </div>
+        </div>
+      </div>
+    )}
+    {showPaymentPrompt && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="absolute inset-0 bg-black/40"></div>
+        <div className="relative w-full max-w-xs bg-white p-6 rounded-lg shadow-xl z-10 text-center">
+          <div className="text-lg font-bold mb-2">请在手机上完成缴费</div>
+          <div className="text-3xl font-extrabold text-teal-600">¥{paymentAmount.toFixed(2)}</div>
+          <div className="text-sm text-slate-500 mt-2">支付成功后自动继续挂号流程</div>
+        </div>
+      </div>
+    )}
+
+    {refundNotice.visible && (
+      <div className="fixed bottom-8 right-8 z-50">
+        <div className="bg-white border p-4 rounded-lg shadow-md w-72">
+          <div className="font-medium text-slate-800">退费提示</div>
+          <div className="text-sm text-slate-600 mt-2">{refundNotice.message}</div>
         </div>
       </div>
     )}

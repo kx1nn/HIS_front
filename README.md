@@ -7,12 +7,16 @@ src/
 │ └── index.ts # 核心业务类型：Patient, Doctor, PrescriptionVO 等
 │
 ├── 📂 store/ # [大脑] 记忆层 (Zustand 状态管理)
-│ └── store.ts # 全局状态：当前用户、Token、通知消息、医生列表
+│ ├── store.ts # 全局状态定义
+│ └── useStore.ts # 状态 Hook 导出
 │
 ├── 📂 services/ # [联络] 通讯层 (Axios API 封装)
-│ └── api.ts # 统一管理所有后端接口与错误拦截
+│ ├── api.ts # 统一管理所有后端接口与错误拦截
+│ ├── authStorage.ts # Token 与用户信息持久化管理
+│ └── logger.ts # 统一日志记录工具
 │
 ├── 📂 components/ # [零件] 公共组件
+│ ├── � Layout/ # 布局组件
 │ ├── 🛡️ PrivateRoute.tsx # 路由守卫 (检查登录状态)
 │ └── 🔔 ToastContainer.tsx # 全局通知显示组件
 │
@@ -45,5 +49,5 @@ src/
 
 ### 注意事项与当前状态
 
-- 登录后 token 存储在 `localStorage`（键 `his_token`），由 `api.ts` 拦截器注入 Authorization 头。
-- 错误处理：服务层使用 `logApiError` 统一记录；页面层决定是否展示 `notify` 给用户。
+- 登录后 token 与用户信息通过 `authStorage.ts` 统一管理（目前存储在 `localStorage`），由 `api.ts` 拦截器注入 Authorization 头。
+- 错误处理：服务层使用 `logger.ts` 统一记录；页面层决定是否展示 `notify` 给用户。

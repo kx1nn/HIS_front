@@ -1,21 +1,16 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   User, Clock, FileText, Pill, Plus, Search, 
-  Trash2, Send, Activity, Stethoscope
+  Trash2, Send, Activity, Stethoscope, LogOut
 } from 'lucide-react';
 import { useStore } from '../../store/store';
 import { registrationApi, isCanceledError } from '../../services/api';
 import * as logger from '../../services/logger';
-import type { RegistrationVO } from '../../types';
+import type { RegistrationVO, Drug } from '../../types';
 
-// 模拟药品库 (实际应从后端获取)
-const MOCK_DRUGS = [
-  { id: 1, name: '阿莫西林胶囊', spec: '0.25g*24粒', price: 18.50, stock: 200 },
-  { id: 2, name: '布洛芬缓释胶囊', spec: '0.3g*20粒', price: 24.00, stock: 56 },
-  { id: 3, name: '复方感冒灵颗粒', spec: '10g*9袋', price: 12.80, stock: 120 },
-  { id: 4, name: '头孢克肟分散片', spec: '0.1g*6片', price: 35.20, stock: 80 },
-  { id: 5, name: '维生素C泡腾片', spec: '1g*10片', price: 19.90, stock: 300 },
-];
+// 药品数据由后端提供；前端初始为空
+const DRUGS: Drug[] = [];
 
 // 处方项类型
 interface PrescriptionItem {
@@ -29,7 +24,8 @@ interface PrescriptionItem {
 }
 
 const DoctorStation: React.FC = () => {
-  const notify = useStore((s) => s.notify);
+  const { user, notify, logout } = useStore();
+  const navigate = useNavigate();
   
   // --- 状态管理 ---
   const [patients, setPatients] = useState<RegistrationVO[]>([]);
@@ -59,7 +55,12 @@ const DoctorStation: React.FC = () => {
     const fetchPatients = async () => {
       try {
         const apiModule = await import('../../services/api');
-        const list = await apiModule.doctorApi.getWaitingList(showAll, { signal: controller.signal });
+        const params: Record<string, unknown> = {};
+        // 始终传 doctorId（优先 relatedId，缺失时回退到 userId），避免后端缺少该必需参数
+        const did = user?.relatedId ?? (user?.role === 'doctor' ? user?.userId : undefined);
+        if (did) params.doctorId = did;
+        logger.debug('DoctorStation.getWaitingList params:', params, 'showAll:', showAll, 'user:', user);
+        const list = await apiModule.doctorApi.getWaitingList(showAll, { signal: controller.signal, params });
         if (!mounted) return;
         setPatients(list.filter(p => p.status !== 2));
       } catch {
@@ -78,7 +79,7 @@ const DoctorStation: React.FC = () => {
 
     void fetchPatients();
     return () => { mounted = false; controller.abort(); };
-  }, [showAll]);
+  }, [showAll, user?.relatedId, user?.userId, user?.role, user]);
 
   // 切换患者时，重置表单
   useEffect(() => {
@@ -96,13 +97,13 @@ const DoctorStation: React.FC = () => {
   // 1. 叫号/接诊
   const handleCallPatient = (patient: RegistrationVO) => {
     setActivePatientId(patient.id);
-    // 更新状态为"诊中" (前端模拟更新)
+    // 更新状态为"诊中"
     setPatients(prev => prev.map(p => p.id === patient.id ? { ...p, status: 1, statusDesc: '诊中' } : p));
     notify(`正在呼叫 ${patient.sequence}号 ${patient.patientName} 到诊室...`, 'info');
   };
 
   // 2. 添加药品
-  const handleAddDrug = (drug: typeof MOCK_DRUGS[0]) => {
+  const handleAddDrug = (drug: Drug) => {
     const existing = prescriptions.find(p => p.drugId === drug.id);
     if (existing) {
       setPrescriptions(prev => prev.map(p => 
@@ -155,17 +156,37 @@ const DoctorStation: React.FC = () => {
       
       {/* === 左侧：候诊列表 (20%) === */}
       <div className="w-72 bg-white border-r border-slate-200 flex flex-col z-10 shadow-sm">
-        <div className="p-4 border-b bg-slate-50 flex items-center justify-between">
-          <h2 className="font-bold text-slate-700 flex items-center gap-2">
-            <User size={18} className="text-blue-600"/> 
-            候诊列表 
-            <span className="bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded-full">{patients.length}</span>
-          </h2>
-          <div className="text-xs text-slate-500 flex items-center gap-2">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={showAll} onChange={() => setShowAll(s => !s)} className="w-4 h-4" />
-              <span>{showAll ? '科室' : '个人'}</span>
-            </label>
+        <div className="p-4 border-b bg-slate-50 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-bold text-slate-700 flex items-center gap-2">
+              <User size={18} className="text-blue-600"/> 
+              候诊列表 
+              <span className="bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded-full">{patients.length}</span>
+            </h2>
+            <div className="flex items-center gap-1">
+              <div className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-100 rounded-md text-[11px] font-medium flex items-center gap-1">
+                <User size={10} />
+                {user?.name}
+              </div>
+              <button 
+                onClick={() => { logout(); navigate('/login'); }}
+                className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+                title="退出登录"
+              >
+                <LogOut size={16} />
+              </button>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <select 
+              value={showAll ? 'dept' : 'personal'} 
+              onChange={(e) => setShowAll(e.target.value === 'dept')}
+              className="w-full text-xs p-2 border rounded-md bg-white outline-none focus:border-blue-500"
+            >
+              <option value="personal">个人候诊队列</option>
+              <option value="dept">全科室候诊队列</option>
+            </select>
           </div>
         </div>
         
@@ -245,7 +266,7 @@ const DoctorStation: React.FC = () => {
 
             {/* 病历表单 */}
             <div className="flex-1 p-8 overflow-y-auto custom-scrollbar bg-slate-50/30">
-              <div className="max-w-3xl mx-auto space-y-6">
+              <div className="max-w-5xl mx-auto space-y-6">
                 
                 <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                   <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b pb-2">
@@ -354,7 +375,7 @@ const DoctorStation: React.FC = () => {
                 <button onClick={() => setShowDrugSearch(false)} className="absolute right-3 top-3 text-xs text-slate-400 hover:text-slate-600">关闭</button>
               </div>
               <div className="space-y-2 overflow-y-auto max-h-[calc(100%-60px)] custom-scrollbar">
-                {MOCK_DRUGS.filter(d => d.name.includes(searchTerm)).map(drug => (
+                {DRUGS.filter(d => d.name.includes(searchTerm)).map(drug => (
                   <div 
                     key={drug.id} 
                     onClick={() => handleAddDrug(drug)}

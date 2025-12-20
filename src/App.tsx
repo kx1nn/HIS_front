@@ -2,7 +2,9 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import LoginPage from './pages/Login';
 import NurseStation from './pages/NurseStation';
+import DoctorStation from './pages/DoctorStation';
 import PharmacyStation from './pages/PharmacyStation';
+import AdminPage from './pages/Admin';
 import PrivateRoute from './components/PrivateRoute';
 import ToastContainer from './components/ToastContainer';
 
@@ -12,39 +14,41 @@ import ToastContainer from './components/ToastContainer';
 function App() {
   return (
     <BrowserRouter>
-      <ToastContainer />
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        
-        {/* 护士站 */}
-        <Route path="/nurse" element={
-          <PrivateRoute>
-            <NurseStation />
-          </PrivateRoute>
-        } />
+      <div className="h-full w-full overflow-hidden bg-slate-50">
+        <ToastContainer />
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          
+          {/* 护士站 */}
+          <Route path="/nurse" element={
+            <PrivateRoute>
+              <NurseStation />
+            </PrivateRoute>
+          } />
 
-        {/* 医生站 (占位) */}
-        <Route path="/doctor" element={
-          <PrivateRoute>
-            <div className="flex items-center justify-center h-full text-slate-400">医生工作台开发中...</div>
-          </PrivateRoute>
-        } />
+          {/* 医生站 */}
+          <Route path="/doctor" element={
+            <PrivateRoute>
+              <DoctorStation />
+            </PrivateRoute>
+          } />
 
-        <Route path="/pharmacy" element={
-          <PrivateRoute>
-            <PharmacyStation />
-          </PrivateRoute>
-        } />
+          <Route path="/pharmacy" element={
+            <PrivateRoute>
+              <PharmacyStation />
+            </PrivateRoute>
+          } />
 
-        {/* 后台 (占位) */}
-        <Route path="/admin" element={
-          <PrivateRoute>
-            <div className="flex items-center justify-center h-full text-slate-400">后台管理开发中...</div>
-          </PrivateRoute>
-        } />
+          {/* 后台 */}
+          <Route path="/admin" element={
+            <PrivateRoute>
+              <AdminPage />
+            </PrivateRoute>
+          } />
 
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </div>
     </BrowserRouter>
   );
 }
