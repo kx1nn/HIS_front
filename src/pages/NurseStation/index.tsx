@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ClipboardList, Search, Plus, Activity, CreditCard, Phone, ShieldCheck } from 'lucide-react';
 import { useStore } from '../../store/store';
-import { basicApi, registrationApi, patientApi, logApiError } from '../../services/api';
+import { basicApi, registrationApi, patientApi, logApiError, isCanceledError } from '../../services/api';
+import * as logger from '../../services/logger';
 import type { RawDoctor, RawDepartment } from '../../services/api';
 import type { RegistrationVO, Patient } from '../../types';
 
@@ -53,8 +54,9 @@ const NurseStation: React.FC = () => {
   const loadPatients = useCallback(async (q?: string) => {
     try {
       const params = q ? { q } : undefined;
-      const raw = await registrationApi.getList(params);
-      console.debug('[NurseStation] fetched registrations raw:', raw);
+      const controller = new AbortController();
+      const raw = await registrationApi.getList(params, { signal: controller.signal });
+      logger.debug('[NurseStation] fetched registrations raw:', raw);
       let mapped = (raw || []).map(normalizeReg);
       if (q && q.trim()) {
         const lq = q.trim().toLowerCase();
@@ -65,7 +67,7 @@ const NurseStation: React.FC = () => {
           String(p.sequence || '').includes(lq)
         ));
       }
-      console.debug('[NurseStation] normalized registrations:', mapped);
+      logger.debug('[NurseStation] normalized registrations:', mapped);
       setPatients(mapped);
     } catch (err) {
       logApiError('NurseStation.loadPatients', err);
@@ -73,20 +75,21 @@ const NurseStation: React.FC = () => {
   }, [normalizeReg]);
 
   useEffect(() => {
+    const controller = new AbortController();
     (async () => {
       try {
         // 先加载挂号列表，再加载科室与医生，避免在 effect 同步体中直接调用 setState
         await loadPatients();
         const depts = await basicApi.getDepartments();
-        console.debug('[NurseStation] fetched departments raw:', depts);
+        logger.debug('[NurseStation] fetched departments raw:', depts);
         const mappedDepts = depts.map((d: RawDepartment) => ({ id: d.id, name: d.name }));
         useStore.getState().setDepartments(mappedDepts);
-        console.debug('[NurseStation] mapped departments:', mappedDepts);
+        logger.debug('[NurseStation] mapped departments:', mappedDepts);
 
         // 根据首个科室（或初始 deptId）加载医生
         const startDeptId = mappedDepts.length > 0 ? mappedDepts[0].id : initialDeptId;
-        const ds = await basicApi.getDoctors(startDeptId);
-        console.debug('[NurseStation] fetched doctors raw for dept', startDeptId, ':', ds);
+        const ds = await basicApi.getDoctors(startDeptId, { signal: controller.signal });
+        logger.debug('[NurseStation] fetched doctors raw for dept', startDeptId, ':', ds);
         const mappedDocs = ds.map((d: RawDoctor) => ({
           id: d.id,
           name: d.name || d.doctorNo || '',
@@ -97,19 +100,22 @@ const NurseStation: React.FC = () => {
           registrationFee: d.registrationFee
         }));
         useStore.getState().setDoctors(mappedDocs);
-        console.debug('[NurseStation] mapped doctors:', mappedDocs);
+        logger.debug('[NurseStation] mapped doctors:', mappedDocs);
         // 将表单的 deptId 设为 startDeptId
         setFormData(prev => ({ ...prev, deptId: startDeptId }));
       } catch (err) {
+        if (isCanceledError(err)) return;
         logApiError('NurseStation.init', err);
       }
     })();
+    return () => { controller.abort(); };
   }, [loadPatients]);
 
   // 切换科室时加载对应医生
   const handleDeptClick = async (newDeptId: number) => {
     setFormData(prev => ({ ...prev, deptId: newDeptId }));
-    const ds = await basicApi.getDoctors(newDeptId);
+    const controller = new AbortController();
+    const ds = await basicApi.getDoctors(newDeptId, { signal: controller.signal });
     const mappedDocs = ds.map((d: RawDoctor) => ({
       id: d.id,
       name: d.name || d.doctorNo || '',
@@ -126,12 +132,13 @@ const NurseStation: React.FC = () => {
   const handleIdBlur = async () => {
     if (formData.idCard.length >= 15) {
       // 优先查询患者表
-      let result = await patientApi.findByIdCard(formData.idCard);
-      console.debug('[NurseStation] patientApi.findByIdCard result:', result);
+      const controller = new AbortController();
+      let result = await patientApi.findByIdCard(formData.idCard, { signal: controller.signal });
+      logger.debug('[NurseStation] patientApi.findByIdCard result:', result);
       if (!result) {
         // 回退到 registrationApi.checkPatient
-        result = await registrationApi.checkPatient(formData.idCard);
-        console.debug('[NurseStation] fallback registrationApi.checkPatient result:', result);
+        result = await registrationApi.checkPatient(formData.idCard, { signal: controller.signal });
+        logger.debug('[NurseStation] fallback registrationApi.checkPatient result:', result);
       }
       if (!result) return;
       const list = Array.isArray(result) ? result : [result];
@@ -156,10 +163,11 @@ const NurseStation: React.FC = () => {
   const handleSearchOld = async () => {
     if (!searchOld || !searchOld.trim()) return;
     setOldSearchStatus('loading');
-    console.debug('[NurseStation] searchOld ->', searchOld.trim());
+    logger.debug('[NurseStation] searchOld ->', searchOld.trim());
     try {
-      const result = await registrationApi.checkPatient(searchOld.trim());
-      console.debug('[NurseStation] checkPatient result:', result);
+      const controller = new AbortController();
+      const result = await registrationApi.checkPatient(searchOld.trim(), { signal: controller.signal });
+      logger.debug('[NurseStation] checkPatient result:', result);
       if (!result) {
         setOldPatients([]);
         setOldSearchStatus('not-found');
@@ -219,7 +227,7 @@ const NurseStation: React.FC = () => {
       type: formData.type
     };
 
-    console.debug('register payload:', payload);
+    logger.debug('register payload:', payload);
 
     const res = await registrationApi.create(payload);
     setLoading(false);

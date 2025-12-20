@@ -29,8 +29,8 @@ const MOCK_DOCTORS: Doctor[] = [
 ];
 
 // --- 尝试从本地存储恢复登录状态 ---
-const savedUser = localStorage.getItem('his_user');
-const initialUser = savedUser ? JSON.parse(savedUser) : null;
+import { getUser, setUser as __setUser, removeUser as __removeUser } from '../services/authStorage';
+const initialUser = getUser() as User | null;
 
 export const useStore = create<AppState>((set) => ({
   user: initialUser,
@@ -39,13 +39,13 @@ export const useStore = create<AppState>((set) => ({
 
   // 登录动作
   login: (user) => {
-    localStorage.setItem('his_user', JSON.stringify(user));
+    __setUser(user);
     set({ user });
   },
-  
+
   // 退出动作
   logout: () => {
-    localStorage.removeItem('his_user');
+    __removeUser();
     set({ user: null });
   },
 }));

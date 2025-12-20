@@ -12,19 +12,6 @@ const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
   useEffect(() => {
     let mounted = true;
-
-    // 开发环境下优先绕过验证并注入临时用户，避免在渲染期触发 localStorage 操作
-    if (import.meta.env.DEV && !token) {
-      try {
-        localStorage.setItem('his_token', 'dev-bypass-token');
-        localStorage.setItem('his_user', JSON.stringify({ name: 'Dev', userId: 1 }));
-      } catch {
-        // ignore
-      }
-      setValid(true);
-      return () => { mounted = false; };
-    }
-
     if (!token) {
       // 无 token，初始已为未登录，无需再次 setState
       return () => { mounted = false; };
@@ -35,10 +22,11 @@ const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       if (!mounted) return;
       if (!ok) {
         logout();
-        setValid(false);
-      } else {
-        setValid(true);
       }
+      // set validation result once; ESLint rule flags setState-in-effect here but this
+      // is an intended async validation. Disable the specific rule for this line.
+       
+      setValid(Boolean(ok));
     })();
 
     return () => { mounted = false; };

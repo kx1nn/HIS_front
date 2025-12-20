@@ -3,8 +3,9 @@ import {
   Package, Search, Plus, AlertTriangle, 
   CheckCircle, Filter, Activity, Clock 
 } from 'lucide-react';
-import { pharmacyApi } from '../../services/api';
+import { pharmacyApi, isCanceledError } from '../../services/api';
 import { useStore } from '../../store/store';
+import * as logger from '../../services/logger';
 import type { Drug, PrescriptionVO, PrescriptionItemVO } from '../../types';
 
 const PharmacyStation: React.FC = () => {
@@ -15,25 +16,27 @@ const PharmacyStation: React.FC = () => {
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
     const fetch = async () => {
       if (!mounted) return;
       try {
         if (activeTab === 'inventory' || activeTab === 'expiry') {
-          const data = await pharmacyApi.getDrugs(searchTerm);
+          const data = await pharmacyApi.getDrugs(searchTerm, undefined, { signal: controller.signal });
           if (!mounted) return;
           setDrugs(data);
         } else {
-          const data = await pharmacyApi.getPendingPrescriptions();
+          const data = await pharmacyApi.getPendingPrescriptions({ signal: controller.signal });
           if (!mounted) return;
           setPrescriptions(data);
         }
-      } catch {
-        // ignore, pharmacyApi has its own fallbacks
+      } catch (e) {
+        if (isCanceledError(e)) return;
+        logger.warn('PharmacyStation.fetch', e);
       }
     };
 
     void fetch();
-    return () => { mounted = false; };
+    return () => { mounted = false; controller.abort(); };
   }, [activeTab, searchTerm]);
 
   const handleDispense = async (id: number) => {

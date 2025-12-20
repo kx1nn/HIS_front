@@ -1,8 +1,11 @@
 // src/services/api.ts
 import axios, { type AxiosError, type AxiosRequestConfig } from 'axios';
+import { getToken, setToken } from '../services/authStorage';
+import { useStore } from '../store/store';
+import * as logger from './logger';
 import type { RegistrationDTO, RegistrationVO, Patient, MedicalRecord, Drug, PrescriptionVO } from '../types';
 
-// 后端原始 DTO（根据后端返回字段定义具体类型，避免使用 `any`）
+// 后端原始 DTO
 export type RawDoctor = {
   id: number;
   doctorNo?: string;
@@ -38,7 +41,7 @@ export const api = axios.create({
 // 在每次请求前自动注入 Authorization header
 api.interceptors.request.use((config) => {
   try {
-    const token = localStorage.getItem('his_token');
+    const token = getToken();
     if (token && config && config.headers) {
       (config.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
     }
@@ -48,7 +51,18 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// 全局响应错误拦截：对特定状态码给出友好提示
+// 401 刷新队列：避免并发刷新导致重复登出/重复刷新
+let isRefreshing = false;
+let refreshSubscribers: Array<(token: string | null) => void> = [];
+function subscribeTokenRefresh(cb: (token: string | null) => void) {
+  refreshSubscribers.push(cb);
+}
+function onRefreshed(token: string | null) {
+  refreshSubscribers.forEach((cb) => cb(token));
+  refreshSubscribers = [];
+}
+
+// 全局响应错误拦截：对特定状态码给出友好提示，并在 401 时尝试刷新
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
@@ -56,13 +70,68 @@ api.interceptors.response.use(
       const status = error.response?.status;
       const url = (error.config as AxiosRequestConfig | undefined)?.url ?? '';
       const isLoginRequest = typeof url === 'string' && url.includes('/auth/login');
+
       // 对 403 和 404 统一记录为系统错误（由页面决定是否展示提示），避免重复通知
       if (!isLoginRequest && (status === 403 || status === 404)) {
-        logApiError('api.interceptor', error);
+        logger.error('api.interceptor', error);
+      }
+
+      // 处理 401：尝试刷新 token 并重试原请求
+      if (status === 401 && !isLoginRequest) {
+        const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
+        if (!originalRequest) return Promise.reject(error);
+        if (originalRequest._retry) return Promise.reject(error);
+        originalRequest._retry = true;
+
+        if (isRefreshing) {
+          return new Promise((resolve, reject) => {
+            subscribeTokenRefresh((token) => {
+              if (token) {
+                if (originalRequest.headers) (originalRequest.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+                resolve(api(originalRequest));
+              } else {
+                reject(error);
+              }
+            });
+          });
+        }
+
+        isRefreshing = true;
+        return new Promise((resolve, reject) => {
+          (async () => {
+            try {
+              // 尝试刷新 token（后端需实现 /auth/refresh 或等效接口）
+              const refreshRes = await api.post('/auth/refresh');
+              const norm = normalizeResponse<{ token?: string }>(refreshRes?.data);
+              const newToken = norm.data?.token ?? null;
+              if (newToken) {
+                setToken(newToken);
+                try {
+                  useStore.getState().setToken(newToken);
+                } catch (e) {
+                  logger.warn('useStore update failed after refresh', e);
+                }
+                onRefreshed(newToken);
+                if (originalRequest.headers) (originalRequest.headers as Record<string, string>)['Authorization'] = `Bearer ${newToken}`;
+                resolve(api(originalRequest));
+              } else {
+                onRefreshed(null);
+                try { useStore.getState().logout(); } catch (e) { logger.warn('logout failed after refresh failure', e); }
+                reject(error);
+              }
+            } catch (e) {
+              onRefreshed(null);
+              try { useStore.getState().logout(); } catch (err) { logger.warn('logout failed after refresh exception', err); }
+              reject(e);
+            } finally {
+              isRefreshing = false;
+            }
+          })();
+        });
       }
     } catch (e) {
       // 忽略拦截器内部错误，但记录以便排查
-      logApiError('api.interceptor', e);
+      logger.error('api.interceptor', e);
     }
     return Promise.reject(error);
   }
@@ -106,7 +175,21 @@ function normalizeResponse<T>(data: unknown): { success: boolean; data?: T; mess
 // 统一错误记录，便于后续更改为上报
 export function logApiError(tag: string, err: unknown) {
   const e = err as AxiosError | undefined;
-  console.error(`${tag} error:`, e?.response?.status, e?.response?.data, e?.message);
+  logger.error(`${tag} error:`, e?.response?.status, e?.response?.data, e?.message);
+}
+
+// 导出一个辅助函数，便于组件创建取消控制器并在卸载时中止请求
+export function makeAbortController(): AbortController {
+  return new AbortController();
+}
+
+// 判断是否为请求被取消（Abort/axios cancel）
+export function isCanceledError(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const o = e as Record<string, unknown>;
+  const name = o['name'];
+  const code = o['code'];
+  return (typeof name === 'string' && name === 'CanceledError') || (typeof code === 'string' && code === 'ERR_CANCELED');
 }
 
 // --- 认证相关 API ---
@@ -166,12 +249,12 @@ export const registrationApi = {
       return { success: false, message: mapStatusToMessage(e) || '网络请求失败' };
     }
   },
-  
+
   // 2. 获取今日挂号列表
-  getList: async (params?: { q?: string; idCard?: string; patientName?: string; phone?: string }): Promise<RegistrationVO[]> => {
+  getList: async (params?: { q?: string; idCard?: string; patientName?: string; phone?: string }, config?: AxiosRequestConfig): Promise<RegistrationVO[]> => {
     try {
       // GET '/api/registrations' 返回列表，支持查询参数
-      const res = await api.get('/registrations', { params });
+      const res = await api.get('/registrations', { ...(config ?? {}), params });
       const norm = normalizeResponse<RegistrationVO[]>(res?.data);
       return norm.data || [];
     } catch (err: unknown) {
@@ -183,13 +266,13 @@ export const registrationApi = {
 
   // 3. 根据身份证或通用查询查询老患者
   // 参数可以是身份证号/手机号/姓名，函数会智能选择查询参数名
-  checkPatient: async (q: string): Promise<Patient | Patient[] | null> => {
+  checkPatient: async (q: string, config?: AxiosRequestConfig): Promise<Patient | Patient[] | null> => {
     try {
       const isIdCard = typeof q === 'string' && q.trim().length >= 15 && /^[0-9Xx]+$/.test(q.replace(/\s+/g, ''));
       const url = isIdCard
         ? `/patient/check?idCard=${encodeURIComponent(q)}`
         : `/patient/check?q=${encodeURIComponent(q)}`;
-      const res = await api.get(url);
+      const res = await api.get(url, { ...(config ?? {}) });
       const norm = normalizeResponse<Patient | Patient[] | null>(res?.data);
       return norm.data ?? null;
     } catch (err: unknown) {
@@ -203,19 +286,19 @@ export const registrationApi = {
 // 患者表相关 API（优先用于在患者表中检索）
 export const patientApi = {
   // 根据身份证查找患者（优先从 /patients 或 /patient/list 等接口获取）
-  findByIdCard: async (idCard: string): Promise<Patient | Patient[] | null> => {
+  findByIdCard: async (idCard: string, config?: AxiosRequestConfig): Promise<Patient | Patient[] | null> => {
     try {
       // 尝试常见路径，后端可能在不同路由下实现，优先使用 /patients
       const tryUrls = [`/patients?idCard=${encodeURIComponent(idCard)}`, `/patient/check?idCard=${encodeURIComponent(idCard)}`];
       for (const url of tryUrls) {
         try {
-          const res = await api.get(url);
+          const res = await api.get(url, { ...(config ?? {}) });
           const norm = normalizeResponse<Patient | Patient[] | null>(res?.data);
           if (norm.data) return norm.data;
           continue;
-        } catch {
+        } catch (e) {
           // 单个路径失败继续尝试下一个
-          console.debug('[patientApi] try url failed', url);
+          logger.debug('[patientApi] try url failed', url, e);
         }
       }
       return null;
@@ -252,10 +335,10 @@ export const patientApi = {
 
 // 基础数据 API：医生与科室
 export const basicApi = {
-  getDoctors: async (deptId?: number): Promise<RawDoctor[]> => {
+  getDoctors: async (deptId?: number, config?: AxiosRequestConfig): Promise<RawDoctor[]> => {
     try {
       const url = deptId ? `/basic/doctors?deptId=${encodeURIComponent(String(deptId))}` : '/basic/doctors';
-      const res = await api.get(url);
+      const res = await api.get(url, { ...(config ?? {}) });
       const norm = normalizeResponse<RawDoctor[]>(res?.data);
       return norm.data || [];
     } catch (err: unknown) {
@@ -280,9 +363,9 @@ export const basicApi = {
 // --- 药房 API ---
 export const pharmacyApi = {
   // 查询库存（支持关键字/低库存筛选）
-  getDrugs: async (keyword?: string, lowStock?: boolean): Promise<Drug[]> => {
+  getDrugs: async (keyword?: string, lowStock?: boolean, config?: AxiosRequestConfig): Promise<Drug[]> => {
     try {
-      const res = await api.get('/medicine/stock', { params: { keyword, lowStock } });
+      const res = await api.get('/medicine/stock', { ...(config ?? {}), params: { keyword, lowStock } });
       const norm = normalizeResponse<Drug[]>(res?.data);
       return norm.data || [];
     } catch (err) {
@@ -292,13 +375,13 @@ export const pharmacyApi = {
   },
 
   // 获取待发药处方（若后端提供对应接口可替换）
-  getPendingPrescriptions: async (): Promise<PrescriptionVO[]> => {
+  getPendingPrescriptions: async (config?: AxiosRequestConfig): Promise<PrescriptionVO[]> => {
     try {
       // 尝试后端常见路径
       const tryUrls = ['/medicine/pending', '/prescriptions/pending', '/prescriptions?status=pending'];
       for (const url of tryUrls) {
         try {
-          const res = await api.get(url);
+          const res = await api.get(url, { ...(config ?? {}) });
           const norm = normalizeResponse<PrescriptionVO[]>(res?.data);
           if (norm.data) return norm.data;
           if (Array.isArray(res?.data)) return res?.data as PrescriptionVO[];
@@ -401,9 +484,9 @@ export const medicalRecordApi = {
 // --- 医生相关 API ---
 export const doctorApi = {
   // 获取医生候诊列表，showAll=true 返回科室全部候诊
-  getWaitingList: async (showAll = false): Promise<RegistrationVO[]> => {
+  getWaitingList: async (showAll = false, config?: AxiosRequestConfig): Promise<RegistrationVO[]> => {
     try {
-      const res = await api.get(`/doctor/waiting-list`, { params: { showAll } });
+      const res = await api.get(`/doctor/waiting-list`, { ...(config ?? {}), params: { showAll } });
       const norm = normalizeResponse<RegistrationVO[]>(res?.data);
       return norm.data || [];
     } catch (err: unknown) {

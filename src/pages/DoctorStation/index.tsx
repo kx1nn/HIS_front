@@ -4,7 +4,8 @@ import {
   Trash2, Send, Activity, Stethoscope
 } from 'lucide-react';
 import { useStore } from '../../store/store';
-import { registrationApi } from '../../services/api';
+import { registrationApi, isCanceledError } from '../../services/api';
+import * as logger from '../../services/logger';
 import type { RegistrationVO } from '../../types';
 
 // 模拟药品库 (实际应从后端获取)
@@ -54,20 +55,29 @@ const DoctorStation: React.FC = () => {
   // --- 初始化加载 ---
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
     const fetchPatients = async () => {
       try {
-        const list = await (await import('../../services/api')).doctorApi.getWaitingList(showAll);
+        const apiModule = await import('../../services/api');
+        const list = await apiModule.doctorApi.getWaitingList(showAll, { signal: controller.signal });
         if (!mounted) return;
         setPatients(list.filter(p => p.status !== 2));
       } catch {
-        const list = await registrationApi.getList();
-        if (!mounted) return;
-        setPatients(list.filter(p => p.status !== 2));
+        // fallback to registrationApi
+        try {
+          const list = await registrationApi.getList(undefined, { signal: controller.signal });
+          if (!mounted) return;
+          setPatients(list.filter(p => p.status !== 2));
+        } catch (e) {
+          if (isCanceledError(e)) return;
+          // otherwise log
+          logger.error('DoctorStation.fetchPatients', e);
+        }
       }
     };
 
     void fetchPatients();
-    return () => { mounted = false; };
+    return () => { mounted = false; controller.abort(); };
   }, [showAll]);
 
   // 切换患者时，重置表单

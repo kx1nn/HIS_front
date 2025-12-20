@@ -37,10 +37,9 @@ const MOCK_DOCTORS: Doctor[] = [
 ];
 
 // --- 尝试从本地存储恢复登录状态 ---
-const savedUser = localStorage.getItem('his_user');
-const savedToken = localStorage.getItem('his_token');
-const initialUser = savedUser ? JSON.parse(savedUser) : null;
-const initialToken = savedToken ?? null;
+import { getUser, getToken, setUser as __setUser, setToken as __setToken, removeUser as __removeUser, removeToken as __removeToken } from '../services/authStorage';
+const initialUser = getUser() as User | null;
+const initialToken = getToken();
 
 export const useStore = create<AppState>((set) => ({
   user: initialUser,
@@ -53,7 +52,7 @@ export const useStore = create<AppState>((set) => ({
 
   // 登录动作
   login: (user) => {
-    localStorage.setItem('his_user', JSON.stringify(user));
+    __setUser(user);
     set({ user });
   },
   // 通知实现
@@ -68,15 +67,14 @@ export const useStore = create<AppState>((set) => ({
   },
   removeNotification: (id: number) => set((s) => ({ notifications: s.notifications.filter(n => n.id !== id) })),
   setToken: (token) => {
-    if (token) localStorage.setItem('his_token', token);
-    else localStorage.removeItem('his_token');
+    __setToken(token);
     set({ token });
   },
-  
+
   // 退出动作
   logout: () => {
-    localStorage.removeItem('his_user');
-    localStorage.removeItem('his_token');
+    __removeUser();
+    __removeToken();
     set({ user: null, token: null });
   },
 }));
