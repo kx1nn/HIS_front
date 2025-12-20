@@ -143,6 +143,31 @@ export interface RegistrationRecord {
   updated_by?: number | null;
 }
 
+// --- 药品数据 ---
+export interface Drug {
+  id: number;              // main_id
+  medicineCode: string;    // medicine_code
+  name: string;            // name
+  commonName?: string;     // generic_name
+  spec: string;            // specification
+  unit: string;            // unit
+  price: number;           // retail_price
+  stock: number;           // stock_quantity
+  manufacturer: string;    // manufacturer
+  category: string;        // category (原 type)
+  minStock: number;        // min_stock
+  expiryWarningDays: number; // expiry_warning_days
+  isPrescription: number;  // is_prescription (0/1)
+  dbStatus: number;        // status (1=启用, 0=停用)
+
+  batchNumber?: string;    
+  productionDate?: string; 
+  expiryDate?: string;     
+  
+  // UI 辅助状态
+  uiStatus?: 'normal' | 'low_stock' | 'expired'; 
+}
+
 // his_medical_record
 export interface MedicalRecord {
   main_id: number;
@@ -220,6 +245,24 @@ export interface PrescriptionDetail {
   sort_order?: number | null;
   created_by?: number | null;
   updated_by?: number | null;
+}
+
+// 前端展示用处方 VO（UI 层）
+export interface PrescriptionItemVO {
+  drugName: string;
+  spec?: string | null;
+  count: number;
+  usage?: string | null;
+}
+
+export interface PrescriptionVO {
+  id: number;
+  patientName: string;
+  gender: number;
+  age: number;
+  regNo?: string | null;
+  totalAmount: number;
+  items: PrescriptionItemVO[];
 }
 
 // his_charge

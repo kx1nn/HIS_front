@@ -5,8 +5,14 @@ import type { User, Doctor, Department } from '../types';
 export interface AppState {
   // 用户状态
   user: User | null;
+  token: string | null;
   login: (user: User) => void;
+  setToken: (token: string | null) => void;
   logout: () => void;
+  // 通用通知（弹出卡片）
+  notifications: Array<{ id: number; type?: 'info' | 'success' | 'error' | 'warn'; message: string }>;
+  notify: (message: string, type?: 'info' | 'success' | 'error' | 'warn') => void;
+  removeNotification: (id: number) => void;
 
   // 主数据 (模拟数据库)
   doctors: Doctor[];
@@ -32,10 +38,13 @@ const MOCK_DOCTORS: Doctor[] = [
 
 // --- 尝试从本地存储恢复登录状态 ---
 const savedUser = localStorage.getItem('his_user');
+const savedToken = localStorage.getItem('his_token');
 const initialUser = savedUser ? JSON.parse(savedUser) : null;
+const initialToken = savedToken ?? null;
 
 export const useStore = create<AppState>((set) => ({
   user: initialUser,
+  token: initialToken,
   doctors: MOCK_DOCTORS,
   departments: MOCK_DEPTS,
 
@@ -47,10 +56,27 @@ export const useStore = create<AppState>((set) => ({
     localStorage.setItem('his_user', JSON.stringify(user));
     set({ user });
   },
+  // 通知实现
+  notifications: [],
+  notify: (message: string, type: 'info' | 'success' | 'error' | 'warn' = 'info') => {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    set((s) => ({ notifications: [...s.notifications, { id, type, message }] }));
+    // 自动清除
+    setTimeout(() => {
+      set((s) => ({ notifications: s.notifications.filter(n => n.id !== id) }));
+    }, 4500);
+  },
+  removeNotification: (id: number) => set((s) => ({ notifications: s.notifications.filter(n => n.id !== id) })),
+  setToken: (token) => {
+    if (token) localStorage.setItem('his_token', token);
+    else localStorage.removeItem('his_token');
+    set({ token });
+  },
   
   // 退出动作
   logout: () => {
     localStorage.removeItem('his_user');
-    set({ user: null });
+    localStorage.removeItem('his_token');
+    set({ user: null, token: null });
   },
 }));

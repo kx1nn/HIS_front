@@ -1,32 +1,69 @@
 // src/pages/Login/index.tsx
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { User, Lock, Activity, ChevronRight } from 'lucide-react';
 import { useStore, type AppState } from '../../store/store';
+import { authApi } from '../../services/api';
 import type { User as UserType } from '../../types';
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const locState = (location.state as { authExpired?: boolean; message?: string } | null) ?? null;
+  const notify = useStore((s: AppState) => s.notify);
   const login = useStore((state: AppState) => state.login);
   
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(locState?.message ?? '');
+
+  useEffect(() => {
+    if (locState?.message) notify(locState.message, 'error');
+  }, [locState?.message, notify]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
+    (async () => {
+      try {
+        const res = await authApi.login({ username, password });
+        setLoading(false);
+        if (res.success && res.data && res.data.token) {
+          const data = res.data;
+          // 存 token
+          useStore.getState().setToken(data.token);
+          // map role -> 小写符合前端约定
+          const roleStr = (data.role || 'admin').toString().toLowerCase();
+          const name = data.realName || username;
+          // 存入全局状态（不强制包含所有字段）
+          login({ role: roleStr as UserType['role'], name, dept: '' });
+          // 跳转
+          if (roleStr.includes('nurse')) navigate('/nurse');
+          else if (roleStr.includes('doctor')) navigate('/doctor');
+          else if (roleStr.includes('pharmacy')) navigate('/pharmacy');
+          else navigate('/admin');
+          return;
+        }
+        // 后端返回失败且包含 message，直接展示（只在登录页内嵌显示，避免重复 toast）
+        if (res && !res.success && res.message) {
+          setError(res.message);
+          return;
+        }
+        // 若接口返回失败且无 message，则回落到本地模拟（主要用于离线开发）
+        // 使用原有模拟逻辑
+      } catch {
+        setLoading(false);
+        // continue to fallback
+      }
 
-    // 模拟后端验证
-    setTimeout(() => {
+      // 原有本地模拟（离线回退）
       setLoading(false);
       let role = '';
       let name = '';
       let dept = '';
 
-      // 简单模拟账号逻辑
       if (username === 'nurse') {
         role = 'nurse'; name = '李护士'; dept = '门诊部';
       } else if (username === 'doctor') {
@@ -38,14 +75,11 @@ const LoginPage: React.FC = () => {
         return;
       }
 
-      // 1. 存入全局状态
       login({ role: role as UserType['role'], name, dept });
-
-      // 2. 跳转到对应界面
       if (role === 'nurse') navigate('/nurse');
       else if (role === 'doctor') navigate('/doctor');
       else navigate('/admin');
-    }, 800);
+    })();
   };
 
   return (

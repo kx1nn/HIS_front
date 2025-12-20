@@ -1,102 +1,49 @@
 # HIS 智慧医疗系统 (前端)
 
-## 🚀 快速开始
-
-### 1. 安装依赖
-
-```bash
-npm install
-```
-
-### 2. 启动开发服务器
-
-```bash
-npm run dev
-```
-
-启动后访问终端显示的地址（通常是 `http://localhost:5173`）。
-
-### 3. 测试账号
-
-- **护士站**: 账号 `nurse` / 密码任意
-- **医生站**: 账号 `doctor` / 密码任意
-- **管理员**: 账号 `admin` / 密码任意
-
-## 🔌 后端对接说明
-
-目前项目使用 **纯前端 Mock 数据** 模式，所有数据存储在内存中，刷新页面会重置。
-
-### 如何连接真实后端？
-
-1. **修改 API 地址**
-   打开 `src/services/api.ts`，修改 `API_BASE_URL`：
-
-   ```typescript
-   // src/services/api.ts
-   const API_BASE_URL = "http://localhost:8080/api"; // 你的后端地址
-   ```
-
-2. **替换 Mock 逻辑**
-   在 `src/services/api.ts` 中，将模拟数据的代码替换为真实的 Axios 请求。
-
-   **示例：提交挂号**
-
-   ```typescript
-   // 修改前 (Mock)
-   create: async (data) => {
-     // ...模拟代码...
-     return { success: true, data: newReg };
-   };
-
-   // 修改后 (真实请求)
-   create: async (data) => {
-     try {
-       const res = await api.post("/registration/create", data);
-       return res.data; // 假设后端返回 { success: true, data: ... }
-     } catch (error) {
-       return { success: false, message: "网络请求失败" };
-     }
-   };
-   ```
-
-3. **解决跨域问题 (CORS)**
-   如果前后端不在同一个端口（例如前端 5173，后端 8080），需要在 **后端** 配置 CORS 允许跨域，或者在 `vite.config.ts` 中配置代理：
-   ```typescript
-   // vite.config.ts
-   export default defineConfig({
-     server: {
-       proxy: {
-         "/api": {
-           target: "http://localhost:8080",
-           changeOrigin: true,
-           rewrite: (path) => path.replace(/^\/api/, ""),
-         },
-       },
-     },
-     // ...
-   });
-   ```
-
 ## 📂 目录结构说明
 
-```text
 src/
-├── 📂 types/           # [定义] 字典层
-│   └── index.ts        # 规定了“患者”、“医生”的数据长什么样 (TypeScript 类型)
+├── 📂 types/ # [定义] 字典层 (TypeScript 类型定义)
+│ └── index.ts # 核心业务类型：Patient, Doctor, PrescriptionVO 等
 │
-├── 📂 store/           # [大脑] 记忆层
-│   └── store.ts        # 存着“当前登录用户”、“医生列表”这些全局数据 (Zustand)
+├── 📂 store/ # [大脑] 记忆层 (Zustand 状态管理)
+│ └── store.ts # 全局状态：当前用户、Token、通知消息、医生列表
 │
-├── 📂 services/        # [联络] 通讯层
-│   └── api.ts          # 专门负责跟后端服务器发请求、拿数据 (Axios)
+├── 📂 services/ # [联络] 通讯层 (Axios API 封装)
+│ └── api.ts # 统一管理所有后端接口与错误拦截
 │
-├── 📂 pages/           # [界面] 视图层 (用户看到的页面)
-│   ├── 📂 Login/       # 登录页文件夹
-│   │   └── index.tsx   # 登录页的具体代码
-│   └── 📂 NurseStation/# 护士工作台文件夹
-│       └── index.tsx   # 护士站的具体代码
+├── 📂 components/ # [零件] 公共组件
+│ ├── 🛡️ PrivateRoute.tsx # 路由守卫 (检查登录状态)
+│ └── 🔔 ToastContainer.tsx # 全局通知显示组件
 │
-├── ⚛️ App.tsx          # [路标] 路由配置 (决定输入网址后跳到哪个 Page)
-├── ⚛️ main.tsx         # [入口] 程序启动的地方 (把 App 挂载到 HTML 上)
-└── 🎨 index.css        # [装修] 全局样式 (Tailwind 配置)
-```
+├── 📂 pages/ # [界面] 视图层 (各业务子系统)
+│ ├── 📂 Login/ # 登录页
+│ ├── 📂 DoctorStation/ # 医生工作台 (接诊、写病历)
+│ ├── 📂 NurseStation/ # 护士工作站 (挂号、患者列表)
+│ ├── 📂 PharmacyStation/ # 药房工作台 (发药、库存)
+│ └── 📂 Admin/ # 后台管理
+│
+├── ⚛️ App.tsx # [路标] 路由配置 (Router)
+├── ⚛️ main.tsx # [入口] 程序启动与挂载
+└── 🎨 index.css # [装修] 全局样式 (Tailwind CSS)
+
+## 当前说明
+
+此仓库为 HIS 前端，采用 React + TypeScript + Vite，主要职责为与后端 API 对接并提供医生/护士/药房等工作台视图。
+
+### 快速命令
+
+- 安装依赖: `npm install`
+- 本地开发: `npm run dev`
+- 构建: `npm run build`
+- 代码检查: `npm run lint`
+- 类型检查: `npx tsc -b --noEmit`
+
+### 环境变量
+
+- `VITE_API_BASE`：后端基准地址。未设置时默认 `/api`。
+
+### 注意事项与当前状态
+
+- 登录后 token 存储在 `localStorage`（键 `his_token`），由 `api.ts` 拦截器注入 Authorization 头。
+- 错误处理：服务层使用 `logApiError` 统一记录；页面层决定是否展示 `notify` 给用户。

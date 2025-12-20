@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ClipboardList, Search, Plus, Activity, CreditCard, Phone, ShieldCheck } from 'lucide-react';
 import { useStore } from '../../store/store';
-import { basicApi, registrationApi, patientApi } from '../../services/api';
+import { basicApi, registrationApi, patientApi, logApiError } from '../../services/api';
 import type { RawDoctor, RawDepartment } from '../../services/api';
 import type { RegistrationVO, Patient } from '../../types';
 
@@ -68,7 +68,7 @@ const NurseStation: React.FC = () => {
       console.debug('[NurseStation] normalized registrations:', mapped);
       setPatients(mapped);
     } catch (err) {
-      console.error('loadPatients failed', err);
+      logApiError('NurseStation.loadPatients', err);
     }
   }, [normalizeReg]);
 
@@ -101,7 +101,7 @@ const NurseStation: React.FC = () => {
         // 将表单的 deptId 设为 startDeptId
         setFormData(prev => ({ ...prev, deptId: startDeptId }));
       } catch (err) {
-        console.error('init load failed', err);
+        logApiError('NurseStation.init', err);
       }
     })();
   }, [loadPatients]);
@@ -169,7 +169,7 @@ const NurseStation: React.FC = () => {
       setOldPatients(list);
       setOldSearchStatus(list.length > 0 ? 'idle' : 'not-found');
     } catch (err) {
-      console.error('handleSearchOld failed', err);
+      logApiError('NurseStation.handleSearchOld', err);
       setOldPatients([]);
       setOldSearchStatus('error');
     }
@@ -219,7 +219,7 @@ const NurseStation: React.FC = () => {
       type: formData.type
     };
 
-    console.log('register payload:', payload);
+    console.debug('register payload:', payload);
 
     const res = await registrationApi.create(payload);
     setLoading(false);
@@ -238,7 +238,7 @@ const NurseStation: React.FC = () => {
       // 重置表单，但保留科室选择
       setFormData(prev => ({ ...prev, name: '', age: '', idCard: '', phone: '' })); 
     } else {
-      alert('挂号失败: ' + res.message);
+      useStore.getState().notify('挂号失败: ' + (res.message ?? '未知错误'), 'error');
     }
   };
 
@@ -246,8 +246,8 @@ const NurseStation: React.FC = () => {
     <>
     <div className="flex h-full gap-4 p-4 bg-slate-50 overflow-hidden">
       {/* --- 左侧：挂号表单 --- */}
-      <div className="w-[420px] bg-white rounded-xl shadow-sm flex flex-col border border-slate-200">
-        <div className="p-5 border-b bg-gradient-to-r from-teal-50 to-white flex items-center gap-3">
+      <div className="w-105 bg-white rounded-xl shadow-sm flex flex-col border border-slate-200">
+        <div className="p-5 border-b bg-linear-to-r from-teal-50 to-white flex items-center gap-3">
           <div className="p-2 bg-teal-100 text-teal-600 rounded-lg"><Plus size={20} /></div>
           <div>
             <h2 className="font-bold text-slate-800 text-lg">挂号建档</h2>

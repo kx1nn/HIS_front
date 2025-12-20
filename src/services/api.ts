@@ -1,6 +1,6 @@
 // src/services/api.ts
-import axios, { type AxiosError } from 'axios';
-import type { RegistrationDTO, RegistrationVO, Patient } from '../types';
+import axios, { type AxiosError, type AxiosRequestConfig } from 'axios';
+import type { RegistrationDTO, RegistrationVO, Patient, MedicalRecord, Drug, PrescriptionVO } from '../types';
 
 // 后端原始 DTO（根据后端返回字段定义具体类型，避免使用 `any`）
 export type RawDoctor = {
@@ -27,21 +27,46 @@ export type RawDepartment = {
   timestamp?: number;
 };
 
-// 配置 API 基础地址
-// 优先使用环境变量 VITE_API_BASE；开发时若本地代理转发不稳定，
-// 允许在本地直接使用公网 tunnel 地址以便调试（仅开发时）。
 const ENV_BASE = (import.meta.env.VITE_API_BASE as string) || '';
-let API_BASE_URL = ENV_BASE || '/api';
-if (!ENV_BASE && typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-  // TODO: 若你更换了 tunnel 地址，请在这里或通过 VITE_API_BASE 覆盖
-  API_BASE_URL = 'https://415da3e8.r6.cpolar.cn/api';
-  console.info('[api] dev override base URL ->', API_BASE_URL);
-}
+const API_BASE_URL = ENV_BASE || '/api';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 5000,
 });
+
+// 在每次请求前自动注入 Authorization header
+api.interceptors.request.use((config) => {
+  try {
+    const token = localStorage.getItem('his_token');
+    if (token && config && config.headers) {
+      (config.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+    }
+  } catch {
+    // ignore
+  }
+  return config;
+});
+
+// 全局响应错误拦截：对特定状态码给出友好提示
+api.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError) => {
+    try {
+      const status = error.response?.status;
+      const url = (error.config as AxiosRequestConfig | undefined)?.url ?? '';
+      const isLoginRequest = typeof url === 'string' && url.includes('/auth/login');
+      // 对 403 和 404 统一记录为系统错误（由页面决定是否展示提示），避免重复通知
+      if (!isLoginRequest && (status === 403 || status === 404)) {
+        logApiError('api.interceptor', error);
+      }
+    } catch (e) {
+      // 忽略拦截器内部错误，但记录以便排查
+      logApiError('api.interceptor', e);
+    }
+    return Promise.reject(error);
+  }
+);
 
 // 从后端响应数据中安全提取 message 字段
 function extractMessageFromData(data: unknown): string | undefined {
@@ -51,61 +76,94 @@ function extractMessageFromData(data: unknown): string | undefined {
   return typeof msg === 'string' ? msg : undefined;
 }
 
-/*
-// --- 内存数据库 (模拟后端存储) ---
-let mockIdCounter = 1;
-let mockRegistrations: RegistrationVO[] = [
-  {
-    id: 999,
-    regNo: 'REG20231217001',
-    mrn: 'P20230001',
-    patientName: '张伟',
-    idCard: '110101199001011234',
-    gender: 1,
-    age: 32,
-    phone: '13800138000',
-    deptId: 1,
-    deptName: '内科',
-    doctorId: 101,
-    doctorName: '王医生',
-    regFee: 20,
-    insuranceType: '职工医保',
-    type: '初诊',
-    status: 0,
-    statusDesc: '待诊',
-    sequence: 1,
-    createTime: '08:30:00'
-  }
-];
+function mapStatusToMessage(err: unknown): string | undefined {
+  const e = err as AxiosError | undefined;
+  const status = e?.response?.status;
+  if (status === 403 || status === 404) return '系统错误，请联系管理员处理';
+  if (status === 401) return '账号或密码错误，请重新登录';
+  if (status === 500) return '服务器错误，请稍后重试';
+  const msg = extractMessageFromData(e?.response?.data);
+  if (msg) return msg;
+  if (e?.message) return e.message;
+  return undefined;
+}
 
-// --- 模拟历史患者库 (用于身份证自动识别) ---
-const MOCK_PATIENT_DB = [
-  { idCard: '110101199001011234', name: '张伟', gender: 1, age: 33, phone: '13800138000', insuranceType: '职工医保', mrn: 'P20230001' }
-];
-*/
+// 统一响应解析器：识别常见后端包装 {code,message,data} 或 {success,data,message}
+function normalizeResponse<T>(data: unknown): { success: boolean; data?: T; message?: string } {
+  if (data && typeof data === 'object') {
+    const d = data as Record<string, unknown>;
+    if ('code' in d) {
+      const code = Number(d['code'] as unknown) || 0;
+      return { success: code === 0 || code === 200, data: d['data'] as T, message: typeof d['message'] === 'string' ? (d['message'] as string) : undefined };
+    }
+    if ('success' in d) {
+      return { success: Boolean(d['success']), data: d['data'] as T, message: typeof d['message'] === 'string' ? (d['message'] as string) : undefined };
+    }
+  }
+  return { success: true, data: data as T };
+}
+
+// 统一错误记录，便于后续更改为上报
+export function logApiError(tag: string, err: unknown) {
+  const e = err as AxiosError | undefined;
+  console.error(`${tag} error:`, e?.response?.status, e?.response?.data, e?.message);
+}
+
+// --- 认证相关 API ---
+export type LoginRequest = { username: string; password: string };
+export type LoginVO = { token: string; role?: string; realName?: string; userId?: number; relatedId?: number };
+
+export const authApi = {
+  login: async (payload: LoginRequest): Promise<{ success: boolean; data?: LoginVO; message?: string }> => {
+    try {
+      const res = await api.post('/auth/login', payload);
+      const norm = normalizeResponse<LoginVO>(res?.data);
+      return { success: norm.success, data: norm.data, message: norm.message };
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('authApi.login', e);
+      return { success: false, message: mapStatusToMessage(e) || '网络请求失败' };
+    }
+  },
+
+  logout: async (): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const res = await api.post('/auth/logout');
+      const norm = normalizeResponse<unknown>(res?.data);
+      return { success: norm.success, message: norm.message };
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('authApi.logout', e);
+      return { success: false, message: mapStatusToMessage(e) || '网络请求失败' };
+    }
+  },
+
+  validate: async (): Promise<boolean> => {
+    try {
+      const res = await api.get('/auth/validate');
+      const norm = normalizeResponse<unknown>(res?.data);
+      return Boolean(norm.data);
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('authApi.validate', e);
+      return false;
+    }
+  }
+};
+
 
 export const registrationApi = {
-  // 1. 提交挂号接口 -> 调用后端真实接口
+  // 1. 提交挂号接口
   create: async (data: RegistrationDTO): Promise<{ success: boolean; data?: RegistrationVO; message?: string }> => {
     try {
       // 后端提供的是 '/api/registrations'，POST 到该路径创建挂号
       const res = await api.post('/registrations', data);
-      const d = res?.data;
-      // 支持后端常见包装格式 { code, message, data }
-      if (d && typeof d === 'object' && 'code' in (d as Record<string, unknown>)) {
-        const wrapper = d as { code?: number; message?: string; data?: unknown };
-        return { success: wrapper.code === 200, data: wrapper.data as RegistrationVO, message: wrapper.message };
-      }
-      // 支持 { success, data } 格式
-      if (d && typeof d === 'object' && 'success' in (d as Record<string, unknown>)) {
-        return d as { success: boolean; data?: RegistrationVO; message?: string };
-      }
-      // 直接返回数据对象
-      return { success: true, data: d as RegistrationVO };
+      const norm = normalizeResponse<RegistrationVO>(res?.data);
+      return { success: norm.success, data: norm.data, message: norm.message };
     } catch (err: unknown) {
       const e = err as AxiosError;
-      console.error('registrationApi.create error:', e?.response?.status, e?.response?.data, e?.message);
-      return { success: false, message: extractMessageFromData(e?.response?.data) || e?.message || '网络请求失败' };
+      logApiError('registrationApi.create', e);
+      return { success: false, message: mapStatusToMessage(e) || '网络请求失败' };
     }
   },
   
@@ -114,20 +172,11 @@ export const registrationApi = {
     try {
       // GET '/api/registrations' 返回列表，支持查询参数
       const res = await api.get('/registrations', { params });
-      const d = res?.data;
-      // 支持后端包装格式 { code, message, data }
-      if (d && typeof d === 'object' && 'code' in (d as Record<string, unknown>)) {
-        const wrapper = d as { code?: number; message?: string; data?: unknown };
-        return (Array.isArray(wrapper.data) ? (wrapper.data as RegistrationVO[]) : []);
-      }
-      // 支持 { success, data }
-      if (d && typeof d === 'object' && 'success' in (d as Record<string, unknown>)) {
-        return ((d as { success: boolean; data?: unknown }).data as RegistrationVO[]) || [];
-      }
-      return (Array.isArray(d) ? (d as RegistrationVO[]) : []) || [];
+      const norm = normalizeResponse<RegistrationVO[]>(res?.data);
+      return norm.data || [];
     } catch (err: unknown) {
       const e = err as AxiosError;
-      console.error('registrationApi.getList error:', e?.response?.status, e?.response?.data, e?.message);
+      logApiError('registrationApi.getList', e);
       return [];
     }
   },
@@ -141,20 +190,11 @@ export const registrationApi = {
         ? `/patient/check?idCard=${encodeURIComponent(q)}`
         : `/patient/check?q=${encodeURIComponent(q)}`;
       const res = await api.get(url);
-      const d = res?.data;
-      if (d && typeof d === 'object' && 'code' in (d as Record<string, unknown>)) {
-        const wrapper = d as { code?: number; message?: string; data?: unknown };
-        const maybe = wrapper.data as Patient | Patient[] | null;
-        return maybe ?? null;
-      }
-      if (d && typeof d === 'object' && 'success' in (d as Record<string, unknown>)) {
-        const maybe = (d as { success: boolean; data?: unknown }).data as Patient | Patient[] | null;
-        return maybe ?? null;
-      }
-      return (d as Patient | Patient[] | null) ?? null;
+      const norm = normalizeResponse<Patient | Patient[] | null>(res?.data);
+      return norm.data ?? null;
     } catch (err: unknown) {
       const e = err as AxiosError;
-      console.error('registrationApi.checkPatient error:', e?.response?.status, e?.response?.data, e?.message);
+      logApiError('registrationApi.checkPatient', e);
       return null;
     }
   }
@@ -170,27 +210,17 @@ export const patientApi = {
       for (const url of tryUrls) {
         try {
           const res = await api.get(url);
-          const d = res?.data;
-          if (d && typeof d === 'object' && 'code' in (d as Record<string, unknown>)) {
-            const wrapper = d as { code?: number; message?: string; data?: unknown };
-            const maybe = wrapper.data as Patient | Patient[] | null;
-            if (maybe) return maybe;
-            continue;
-          }
-          if (d && typeof d === 'object' && 'success' in (d as Record<string, unknown>)) {
-            const maybe = (d as { success: boolean; data?: unknown }).data as Patient | Patient[] | null;
-            if (maybe) return maybe;
-            continue;
-          }
-          if (d) return (d as Patient | Patient[] | null);
-        } catch (err) {
+          const norm = normalizeResponse<Patient | Patient[] | null>(res?.data);
+          if (norm.data) return norm.data;
+          continue;
+        } catch {
           // 单个路径失败继续尝试下一个
-          console.debug('[patientApi] try url failed', url, err);
+          console.debug('[patientApi] try url failed', url);
         }
       }
       return null;
     } catch (err) {
-      console.error('patientApi.findByIdCard error', err);
+      logApiError('patientApi.findByIdCard', err);
       return null;
     }
   },
@@ -199,17 +229,10 @@ export const patientApi = {
   search: async (q: string): Promise<Patient[] | null> => {
     try {
       const res = await api.get(`/patients/search?q=${encodeURIComponent(q)}`);
-      const d = res?.data;
-      if (d && typeof d === 'object' && 'code' in (d as Record<string, unknown>)) {
-        const wrapper = d as { code?: number; message?: string; data?: unknown };
-        return (Array.isArray(wrapper.data) ? (wrapper.data as Patient[]) : []) || null;
-      }
-      if (d && typeof d === 'object' && 'success' in (d as Record<string, unknown>)) {
-        return ((d as { success: boolean; data?: unknown }).data as Patient[]) || null;
-      }
-      return (Array.isArray(d) ? (d as Patient[]) : null) || null;
+      const norm = normalizeResponse<Patient[]>(res?.data);
+      return norm.data || null;
     } catch (err) {
-      console.error('patientApi.search error', err);
+      logApiError('patientApi.search', err);
       return null;
     }
   }
@@ -218,17 +241,10 @@ export const patientApi = {
   create: async (data: Partial<Patient>): Promise<Patient | null> => {
     try {
       const res = await api.post('/patients', data);
-      const d = res?.data;
-      if (d && typeof d === 'object' && 'code' in (d as Record<string, unknown>)) {
-        const wrapper = d as { code?: number; message?: string; data?: unknown };
-        return (wrapper.data as Patient) ?? null;
-      }
-      if (d && typeof d === 'object' && 'success' in (d as Record<string, unknown>)) {
-        return ((d as { success: boolean; data?: unknown }).data as Patient) ?? null;
-      }
-      return (d as Patient) ?? null;
+      const norm = normalizeResponse<Patient>(res?.data);
+      return norm.data ?? null;
     } catch (err) {
-      console.error('patientApi.create error', err);
+      logApiError('patientApi.create', err);
       return null;
     }
   }
@@ -240,15 +256,11 @@ export const basicApi = {
     try {
       const url = deptId ? `/basic/doctors?deptId=${encodeURIComponent(String(deptId))}` : '/basic/doctors';
       const res = await api.get(url);
-      const d = res?.data;
-      if (d && typeof d === 'object' && 'code' in (d as Record<string, unknown>)) {
-        const wrapper = d as { code?: number; message?: string; data?: unknown };
-        return (Array.isArray(wrapper.data) ? (wrapper.data as RawDoctor[]) : []);
-      }
-      return (Array.isArray(d) ? (d as RawDoctor[]) : []);
+      const norm = normalizeResponse<RawDoctor[]>(res?.data);
+      return norm.data || [];
     } catch (err: unknown) {
       const e = err as AxiosError;
-      console.error('basicApi.getDoctors error:', e?.response?.status, e?.response?.data, e?.message);
+      logApiError('basicApi.getDoctors', e);
       return [];
     }
   },
@@ -256,16 +268,161 @@ export const basicApi = {
   getDepartments: async (): Promise<RawDepartment[]> => {
     try {
       const res = await api.get('/basic/departments');
-      const d = res?.data;
-      if (d && typeof d === 'object' && 'code' in (d as Record<string, unknown>)) {
-        const wrapper = d as { code?: number; message?: string; data?: unknown };
-        return (Array.isArray(wrapper.data) ? (wrapper.data as RawDepartment[]) : []);
-      }
-      return (Array.isArray(d) ? (d as RawDepartment[]) : []);
+      const norm = normalizeResponse<RawDepartment[]>(res?.data);
+      return norm.data || [];
     } catch (err: unknown) {
       const e = err as AxiosError;
-      console.error('basicApi.getDepartments error:', e?.response?.status, e?.response?.data, e?.message);
+      logApiError('basicApi.getDepartments', e);
       return [];
+    }
+  }
+};
+// --- 药房 API ---
+export const pharmacyApi = {
+  // 查询库存（支持关键字/低库存筛选）
+  getDrugs: async (keyword?: string, lowStock?: boolean): Promise<Drug[]> => {
+    try {
+      const res = await api.get('/medicine/stock', { params: { keyword, lowStock } });
+      const norm = normalizeResponse<Drug[]>(res?.data);
+      return norm.data || [];
+    } catch (err) {
+      logApiError('pharmacyApi.getDrugs', err as AxiosError);
+      return [];
+    }
+  },
+
+  // 获取待发药处方（若后端提供对应接口可替换）
+  getPendingPrescriptions: async (): Promise<PrescriptionVO[]> => {
+    try {
+      // 尝试后端常见路径
+      const tryUrls = ['/medicine/pending', '/prescriptions/pending', '/prescriptions?status=pending'];
+      for (const url of tryUrls) {
+        try {
+          const res = await api.get(url);
+          const norm = normalizeResponse<PrescriptionVO[]>(res?.data);
+          if (norm.data) return norm.data;
+          if (Array.isArray(res?.data)) return res?.data as PrescriptionVO[];
+        } catch {
+          // continue
+        }
+      }
+      // 未获取到后端数据，返回空列表
+      return [];
+    } catch (err) {
+      logApiError('pharmacyApi.getPendingPrescriptions', err);
+      return [];
+    }
+  },
+
+  // 根据处方ID发药（扣减库存）
+  dispense: async (prescriptionId: number): Promise<boolean> => {
+    try {
+      const res = await api.post('/medicine/dispense', null, { params: { prescriptionId } });
+      const norm = normalizeResponse<unknown>(res?.data);
+      return norm.success;
+    } catch (err) {
+      logApiError('pharmacyApi.dispense', err);
+      return false;
+    }
+  },
+
+  // 退药操作（根据发药记录ID）
+  returnMedicine: async (dispenseId: number, reason: string): Promise<boolean> => {
+    try {
+      const res = await api.post('/medicine/return', null, { params: { dispenseId, reason } });
+      const norm = normalizeResponse<unknown>(res?.data);
+      return norm.success;
+    } catch (err) {
+      logApiError('pharmacyApi.returnMedicine', err);
+      return false;
+    }
+  },
+
+  // 今日发药统计
+  getTodayStatistics: async (): Promise<unknown | null> => {
+    try {
+      const res = await api.get('/medicine/statistics/today');
+      const norm = normalizeResponse<unknown>(res?.data);
+      return norm.data ?? null;
+    } catch (err) {
+      logApiError('pharmacyApi.getTodayStatistics', err);
+      return null;
+    }
+  },
+
+  // 医生/系统推送处方到药房（保持原有 mock 支持）
+  sendPrescription: async (rx: PrescriptionVO): Promise<boolean> => {
+    try {
+      const res = await api.post('/prescriptions', rx);
+      const norm = normalizeResponse<unknown>(res?.data);
+      return norm.success;
+    } catch (err) {
+      logApiError('pharmacyApi.sendPrescription', err);
+      return false;
+    }
+  }
+};
+
+// --- 病历 API ---
+export const medicalRecordApi = {
+  // 根据挂号单ID查询病历
+  getByRegistrationId: async (regId: number): Promise<MedicalRecord | null> => {
+    try {
+      const res = await api.get(`/medical-records`, { params: { regId } });
+      const norm = normalizeResponse<MedicalRecord | MedicalRecord[] | null>(res?.data);
+      if (Array.isArray(norm.data) && norm.data.length > 0) return norm.data[0] as MedicalRecord;
+      if (norm.data && !Array.isArray(norm.data)) return norm.data as MedicalRecord;
+      return null;
+    } catch (err) {
+      logApiError('medicalRecordApi.getByRegistrationId', err);
+      return null;
+    }
+  },
+  // 保存病历
+  save: async (record: MedicalRecord): Promise<boolean> => {
+    try {
+      // 如果存在主键则更新，否则创建
+      const rec = record as MedicalRecord;
+      if (rec.main_id) {
+        const res = await api.put(`/medical-records/${encodeURIComponent(String(rec.main_id))}`, record);
+        const norm = normalizeResponse<unknown>(res?.data);
+        return norm.success;
+      }
+      const res = await api.post('/medical-records', record);
+      const norm = normalizeResponse<unknown>(res?.data);
+      return norm.success;
+    } catch (err) {
+      logApiError('medicalRecordApi.save', err);
+      return false;
+    }
+  }
+};
+
+// --- 医生相关 API ---
+export const doctorApi = {
+  // 获取医生候诊列表，showAll=true 返回科室全部候诊
+  getWaitingList: async (showAll = false): Promise<RegistrationVO[]> => {
+    try {
+      const res = await api.get(`/doctor/waiting-list`, { params: { showAll } });
+      const norm = normalizeResponse<RegistrationVO[]>(res?.data);
+      return norm.data || [];
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('doctorApi.getWaitingList', e);
+      return [];
+    }
+  },
+
+  // 更新挂号状态，path: /doctor/registrations/{id}/status?status=...
+  updateRegistrationStatus: async (id: number, status: number): Promise<boolean> => {
+    try {
+      const res = await api.put(`/doctor/registrations/${encodeURIComponent(String(id))}/status`, null, { params: { status } });
+      const norm = normalizeResponse<unknown>(res?.data);
+      return norm.success;
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('doctorApi.updateRegistrationStatus', e);
+      return false;
     }
   }
 };

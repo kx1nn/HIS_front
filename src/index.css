@@ -11,3 +11,21 @@
   background-color: #cbd5e1;
   border-radius: 20px;
 }
+
+/* 浏览器兼容性：防止移动设备放大字体 */
+html,
+body {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Tailwind 的 backdrop utilities 在部分 Safari 需要前缀支持 */
+.backdrop-blur,
+.backdrop-blur-sm,
+.backdrop-blur-md,
+.backdrop-blur-lg,
+.backdrop-blur-xl {
+  -webkit-backdrop-filter: inherit;
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
