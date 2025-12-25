@@ -16,11 +16,24 @@ const LoginPage: React.FC = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(locState?.message ?? '');
+  // 将后端可能带有英文字段名前缀的错误消息做本地化清理（函数声明可被提升）
+  function sanitizeErrorMessage(m: string | undefined | null) {
+    if (!m) return '';
+    try {
+      const withoutKeys = (m as string).replace(/\b(username|password|user|pass|email)\s*:\s*/ig, '');
+      return withoutKeys.replace(/;\s*/g, '； ').replace(/,\s*/g, '， ').trim();
+    } catch {
+      return m as string;
+    }
+  }
+
+  const [error, setError] = useState(sanitizeErrorMessage(locState?.message ?? ''));
 
   useEffect(() => {
-    if (locState?.message) notify(locState.message, 'error');
+    if (locState?.message) notify(sanitizeErrorMessage(locState.message), 'error');
   }, [locState?.message, notify]);
+
+  
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,10 +72,10 @@ const LoginPage: React.FC = () => {
         }
         // 后端返回失败且包含 message，直接展示
         if (res && !res.success && res.message) {
-          setError(res.message);
+          setError(sanitizeErrorMessage(res.message));
           return;
         }
-        // 若接口返回失败且无 message，则展示错误（不再使用本地回退）
+        // 若接口返回失败且无 message，则展示错误
         // catch: 网络或认证失败，直接返回错误提示s
       } catch (err) {
         setLoading(false);

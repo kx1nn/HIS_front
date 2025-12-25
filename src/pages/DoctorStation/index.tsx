@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import type { AxiosError, AxiosResponse } from 'axios';
 import { useNavigate } from 'react-router-dom';
 import { 
   User, Clock, FileText, Pill, Plus, Search, 
@@ -7,7 +8,7 @@ import {
 import { useStore } from '../../store/store';
 import { registrationApi, isCanceledError } from '../../services/api';
 import * as logger from '../../services/logger';
-import type { RegistrationVO, Drug } from '../../types';
+import type { RegistrationVO, Drug, MedicalRecordVO } from '../../types';
 
 // 药品数据由后端提供；前端初始为空
 const DRUGS: Drug[] = [];
@@ -37,13 +38,32 @@ const DoctorStation: React.FC = () => {
   const [medicalRecord, setMedicalRecord] = useState({
     symptom: '',   // 主诉
     history: '',   // 现病史
-    diagnosis: ''  // 初步诊断
+    diagnosis: '',  // 初步诊断
+    doctorAdvice: '' // 医嘱
+  });
+
+  // 历史病历弹窗
+  const [historyModal, setHistoryModal] = useState<{
+    visible: boolean;
+    patientId: number | null;
+    patientName: string;
+    records: MedicalRecordVO[];
+    loading: boolean;
+    selectedRecord: MedicalRecordVO | null;
+  }>({
+    visible: false,
+    patientId: null,
+    patientName: '',
+    records: [],
+    loading: false,
+    selectedRecord: null
   });
 
   // 处方管理
   const [prescriptions, setPrescriptions] = useState<PrescriptionItem[]>([]);
   const [showDrugSearch, setShowDrugSearch] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
 
   // 当前接诊患者
   const activePatient = patients.find(p => p.id === activePatientId);
@@ -55,37 +75,47 @@ const DoctorStation: React.FC = () => {
     const fetchPatients = async () => {
       try {
         const apiModule = await import('../../services/api');
-        const params: Record<string, unknown> = {};
-        // 始终传 doctorId（优先 relatedId，缺失时回退到 userId），避免后端缺少该必需参数
-        const did = user?.relatedId ?? (user?.role === 'doctor' ? user?.userId : undefined);
-        if (did) params.doctorId = did;
-        logger.debug('DoctorStation.getWaitingList params:', params, 'showAll:', showAll, 'user:', user);
-        const list = await apiModule.doctorApi.getWaitingList(showAll, { signal: controller.signal, params });
+        // 后端现在从 JWT 中解析当前医生信息并返回对应候诊列表，前端无需传入 doctorId
+        logger.debug('DoctorStation.getWaitingList showAll:', showAll, 'user:', user);
+        const list = await apiModule.doctorApi.getWaitingList(showAll, { signal: controller.signal });
         if (!mounted) return;
         setPatients(list.filter(p => p.status !== 2));
-      } catch {
-        // fallback to registrationApi
+      } catch (err: unknown) {
+        // 若为取消请求则静默返回
+        if (isCanceledError(err)) return;
+        const e = err as AxiosError | undefined;
+        // 认证失败（401 或后端 body 指示认证失败）时，显示提示但不立即跳走
+        const resp = e?.response as AxiosResponse | undefined;
+        const respData = resp?.data as unknown as Record<string, unknown> | undefined;
+        const msg = respData ? String(respData['message'] ?? '') : '';
+        if (resp?.status === 401 || msg.includes('认证')) {
+          useStore.getState().notify('会话失效或无权访问候诊列表，请重新登录', 'error');
+          useStore.getState().logout();
+          // 不直接 navigate 跳走，保留提示让用户手动或点击登录
+          return;
+        }
+
+        // 回退到通用挂号列表（若后端不支持 doctor/waiting-list）
         try {
           const list = await registrationApi.getList(undefined, { signal: controller.signal });
           if (!mounted) return;
           setPatients(list.filter(p => p.status !== 2));
-        } catch (e) {
-          if (isCanceledError(e)) return;
-          // otherwise log
-          logger.error('DoctorStation.fetchPatients', e);
+        } catch (e2) {
+          if (isCanceledError(e2)) return;
+          logger.error('DoctorStation.fetchPatients', e2);
         }
       }
     };
 
     void fetchPatients();
     return () => { mounted = false; controller.abort(); };
-  }, [showAll, user?.relatedId, user?.userId, user?.role, user]);
+  }, [showAll, user?.relatedId, user?.userId, user?.role, user, navigate]);
 
   // 切换患者时，重置表单
   useEffect(() => {
     if (activePatientId) {
       // 实际项目中这里应该调用接口获取该患者的历史病历
-      setMedicalRecord({ symptom: '', history: '', diagnosis: '' });
+      setMedicalRecord({ symptom: '', history: '', diagnosis: '', doctorAdvice: '' });
       setPrescriptions([]);
     }
   }, [activePatientId]);
@@ -93,6 +123,56 @@ const DoctorStation: React.FC = () => {
   // loadPatients 移入 effect 内，避免缺失依赖警告
 
   // --- 业务逻辑 ---
+
+  // 查看历史病历
+  const handleViewHistory = async (e: React.MouseEvent, patient: RegistrationVO) => {
+    e.preventDefault(); // 阻止默认右键菜单
+    setHistoryModal({
+      visible: true,
+      patientId: patient.patientId || null,
+      patientName: patient.patientName,
+      records: [],
+      loading: true,
+      selectedRecord: null
+    });
+    
+    if (patient.patientId) {
+      try {
+        const { doctorApi } = await import('../../services/api');
+        const list = await doctorApi.getPatientHistory(patient.patientId);
+        setHistoryModal(prev => ({ ...prev, records: list, loading: false }));
+      } catch {
+        notify('获取历史病历失败', 'error');
+        setHistoryModal(prev => ({ ...prev, loading: false }));
+      }
+    } else {
+      setHistoryModal(prev => ({ ...prev, loading: false }));
+    }
+  };
+
+  const handleCloseHistory = () => {
+    setHistoryModal(prev => ({ ...prev, visible: false, selectedRecord: null }));
+  };
+
+  const handleSelectHistoryRecord = async (record: MedicalRecordVO) => {
+    // 如果已经有详情数据则直接显示，否则调用详情接口
+    if (record.doctorAdvice) {
+       setHistoryModal(prev => ({ ...prev, selectedRecord: record }));
+       return;
+    }
+    
+    try {
+      const { doctorApi } = await import('../../services/api');
+      const detail = await doctorApi.getMedicalRecordDetail(record.mainId);
+      if (detail) {
+        setHistoryModal(prev => ({ ...prev, selectedRecord: detail }));
+      } else {
+        setHistoryModal(prev => ({ ...prev, selectedRecord: record })); // Fallback
+      }
+    } catch {
+      notify('获取病历详情失败', 'error');
+    }
+  };
 
   // 1. 叫号/接诊
   const handleCallPatient = (patient: RegistrationVO) => {
@@ -132,19 +212,25 @@ const DoctorStation: React.FC = () => {
       return;
     }
 
-    if (confirm(`确认完成对患者 [${activePatient.patientName}] 的诊疗？`)) {
-      setLoading(true);
-      // 调用后端更新状态
-      const { doctorApi } = await import('../../services/api');
-      const ok = await doctorApi.updateRegistrationStatus(activePatient.id, 1);
-      setLoading(false);
-      if (ok) {
-        setPatients(prev => prev.filter(p => p.id !== activePatientId));
-        setActivePatientId(null);
-        notify('诊疗完成！病历已归档，处方已发送至药房。', 'success');
-      } else {
-        notify('操作失败，请重试', 'error');
-      }
+    // 使用自定义卡片式确认框代替原生 confirm
+    // 这里我们简单实现一个状态来控制确认弹窗的显示
+    setShowConfirmModal(true);
+  };
+
+  const handleConfirmSubmit = async () => {
+    if (!activePatient) return;
+    setShowConfirmModal(false);
+    setLoading(true);
+    // 调用后端更新状态
+    const { doctorApi } = await import('../../services/api');
+    const ok = await doctorApi.updateRegistrationStatus(activePatient.id, 1);
+    setLoading(false);
+    if (ok) {
+      setPatients(prev => prev.filter(p => p.id !== activePatientId));
+      setActivePatientId(null);
+      notify('诊疗完成！病历已归档，处方已发送至药房。', 'success');
+    } else {
+      notify('操作失败，请重试', 'error');
     }
   };
 
@@ -201,13 +287,14 @@ const DoctorStation: React.FC = () => {
               <div 
                 key={p.id}
                 onClick={() => activePatientId !== p.id && handleCallPatient(p)}
+                onContextMenu={(e) => handleViewHistory(e, p)}
                 className={`p-4 border-b cursor-pointer transition-all hover:bg-slate-50 group relative ${
                   activePatientId === p.id ? 'bg-blue-50 border-l-4 border-l-blue-600' : 'border-l-4 border-l-transparent'
                 }`}
               >
                 <div className="flex justify-between items-start mb-1">
                   <span className="font-bold text-slate-700">
-                    <span className="text-lg mr-1 font-mono">{p.sequence}</span>号 {p.patientName}
+                    <span className="text-lg mr-1 font-mono">{p.queueNo || p.sequence}</span>{p.queueNo ? '' : '号'} {p.patientName}
                   </span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
                     p.status === 1 ? 'bg-green-50 text-green-600 border-green-200' : 'bg-yellow-50 text-yellow-600 border-yellow-200'
@@ -217,7 +304,7 @@ const DoctorStation: React.FC = () => {
                 </div>
                 <div className="text-xs text-slate-500 flex justify-between items-center">
                   <span>{p.gender === 1 ? '男' : '女'} | {p.age}岁</span>
-                  <span className="font-mono text-slate-400">{p.createTime.slice(0,5)}</span>
+                  <span className="font-mono text-slate-400">{(p.createTime || '').slice(0,5)}</span>
                 </div>
                 
                 {/* 悬停显示的叫号按钮 */}
@@ -323,6 +410,17 @@ const DoctorStation: React.FC = () => {
                         </button>
                       ))}
                     </div>
+                  </div>
+                  
+                  <div className="mt-4">
+                    <label className="block text-sm font-medium text-slate-600 mb-1.5">医嘱 (Doctor Advice)</label>
+                    <textarea 
+                      className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-100 outline-none transition-all resize-none"
+                      rows={3}
+                      placeholder="输入医嘱..."
+                      value={medicalRecord.doctorAdvice}
+                      onChange={e => setMedicalRecord({...medicalRecord, doctorAdvice: e.target.value})}
+                    />
                   </div>
                 </div>
 
@@ -464,6 +562,143 @@ const DoctorStation: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* === 历史病历弹窗 === */}
+      {historyModal.visible && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="p-4 border-b flex justify-between items-center bg-slate-50">
+              <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                <FileText size={18} className="text-blue-600"/>
+                {historyModal.patientName} - 历史病历
+              </h3>
+              <button onClick={handleCloseHistory} className="text-slate-400 hover:text-slate-600">
+                <Plus size={20} className="rotate-45"/>
+              </button>
+            </div>
+            
+            <div className="flex-1 flex overflow-hidden">
+              {/* 左侧列表 */}
+              <div className="w-1/3 border-r bg-slate-50 overflow-y-auto custom-scrollbar p-2">
+                {historyModal.loading ? (
+                  <div className="text-center py-10 text-slate-400">加载中...</div>
+                ) : historyModal.records.length === 0 ? (
+                  <div className="text-center py-10 text-slate-400">暂无历史病历</div>
+                ) : (
+                  historyModal.records.map(rec => (
+                    <div 
+                      key={rec.mainId}
+                      onClick={() => handleSelectHistoryRecord(rec)}
+                      className={`p-3 mb-2 rounded-lg cursor-pointer border transition-all ${
+                        historyModal.selectedRecord?.mainId === rec.mainId 
+                          ? 'bg-white border-blue-500 shadow-sm' 
+                          : 'bg-white border-slate-200 hover:border-blue-300'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start mb-1">
+                        <span className="font-bold text-slate-700 text-sm">{rec.visitTime?.slice(0,10)}</span>
+                        <span className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">{rec.doctorName}</span>
+                      </div>
+                      <div className="text-xs text-slate-500 line-clamp-1">诊断: {rec.diagnosis}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+              
+              {/* 右侧详情 */}
+              <div className="flex-1 overflow-y-auto custom-scrollbar p-6 bg-white">
+                {historyModal.selectedRecord ? (
+                  <div className="space-y-6">
+                    <div className="flex justify-between items-center border-b pb-2">
+                      <h2 className="text-xl font-bold text-slate-800">门诊病历</h2>
+                      <span className="text-sm text-slate-500 font-mono">{historyModal.selectedRecord.visitTime}</span>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div><span className="text-slate-500">就诊科室:</span> <span className="font-medium">--</span></div>
+                      <div><span className="text-slate-500">接诊医生:</span> <span className="font-medium">{historyModal.selectedRecord.doctorName}</span></div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div>
+                        <h4 className="font-bold text-slate-700 mb-1 text-sm">主诉</h4>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord.chiefComplaint || '无'}</p>
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-slate-700 mb-1 text-sm">现病史</h4>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord.presentIllness || '无'}</p>
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-slate-700 mb-1 text-sm">既往史</h4>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord.pastHistory || '无'}</p>
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-slate-700 mb-1 text-sm">诊断</h4>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg font-bold">{historyModal.selectedRecord.diagnosis || '无'}</p>
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-slate-700 mb-1 text-sm">医嘱</h4>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord.doctorAdvice || '无'}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-slate-400 text-sm">
+                    请选择左侧病历查看详情
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* === 诊疗完成确认弹窗 === */}
+      {showConfirmModal && activePatient && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 transform transition-all scale-100">
+            <div className="flex items-center gap-3 mb-4 text-blue-600">
+              <div className="p-2 bg-blue-50 rounded-full">
+                <Activity size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800">确认完成诊疗？</h3>
+            </div>
+            
+            <div className="bg-slate-50 p-4 rounded-lg mb-6 border border-slate-100">
+              <p className="text-sm text-slate-600 mb-2">即将提交以下信息：</p>
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">患者姓名：</span>
+                  <span className="font-medium text-slate-800">{activePatient.patientName}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">初步诊断：</span>
+                  <span className="font-medium text-slate-800">{medicalRecord.diagnosis}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">处方金额：</span>
+                  <span className="font-bold text-red-500">¥{totalAmount.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setShowConfirmModal(false)}
+                className="flex-1 py-2.5 border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 font-medium transition-colors"
+              >
+                取消
+              </button>
+              <button 
+                onClick={handleConfirmSubmit}
+                className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-lg shadow-blue-200 transition-all active:scale-[0.98]"
+              >
+                确认提交
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

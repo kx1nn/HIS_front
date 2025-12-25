@@ -15,6 +15,7 @@ const NurseStation: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [patients, setPatients] = useState<RegistrationVO[]>([]);
   const [receipt, setReceipt] = useState<RegistrationVO | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ visible: boolean; x: number; y: number; reg: RegistrationVO | null }>({ visible: false, x: 0, y: 0, reg: null });
   
   const FIXED_DOCTOR_ID = '';
   // Calculate initial doctor
@@ -27,6 +28,32 @@ const NurseStation: React.FC = () => {
     name: '', gender: '1', age: '', idCard: '', phone: '',
     insurance: '自费', type: '初诊', deptId: initialDeptId, doctorId: initialDoctorId
   });
+
+
+  // 根据身份证号推断性别：仅支持 18 位身份证（倒数第二位奇数为男、偶数为女）
+  const inferGenderFromId = (id?: string | null): number | undefined => {
+    if (!id) return undefined;
+    try {
+      const s = String(id).replace(/\s+/g, '');
+      const digits = s.replace(/[^0-9]/g, '');
+      if (digits.length !== 18) return undefined;
+      const idx = 16; // 倒数第二位（0-based 索引）
+      const d = Number(digits[idx]);
+      if (Number.isNaN(d)) return undefined;
+      return d % 2 === 1 ? 1 : 0;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // 不从后端读取 gender 字段，仅根据身份证（仅 18 位）推断
+  const getGenderLabel = (r: Partial<RegistrationVO> | { idCard?: string; id_card?: string }) => {
+    const rr = r as Record<string, unknown>;
+    const id = (rr['idCard'] as string | undefined) ?? (rr['id_card'] as string | undefined) ?? undefined;
+    const ig = inferGenderFromId(id);
+    if (typeof ig === 'number') return ig === 1 ? '男' : '女';
+    return '—';
+  };
 
   // 1. 根据科室筛选医生
   const activeDoctors = doctors.filter(d => d.deptId === Number(formData.deptId));
@@ -49,16 +76,26 @@ const NurseStation: React.FC = () => {
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
   const [refundNotice, setRefundNotice] = useState<{ visible: boolean; message: string }>({ visible: false, message: '' });
 
-  const normalizeReg = useCallback((r: ReceivedRegistration): RegistrationVO => ({
-    ...(r as RegistrationVO),
-    insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
-    deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
-    doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? ''
-  }), []);
+  const normalizeReg = useCallback((r: ReceivedRegistration): RegistrationVO => {
+    const rr = r as unknown as Record<string, unknown>;
+    const idCardVal = (rr['idCard'] as string | undefined) ?? (rr['id_card'] as string | undefined) ?? undefined;
+    const inferred = inferGenderFromId(idCardVal);
+    return {
+      ...(r as RegistrationVO),
+      gender: typeof inferred !== 'undefined' ? inferred : (typeof r.gender === 'number' ? r.gender : 1),
+      // 兼容后端命名：id_card / patient_name / phone 等
+      idCard: (rr['idCard'] as string | undefined) ?? (rr['id_card'] as string | undefined) ?? (rr['id_card_no'] as string | undefined) ?? (r as RegistrationVO).idCard,
+      patientName: (rr['patientName'] as string | undefined) ?? (rr['patient_name'] as string | undefined) ?? (rr['name'] as string | undefined) ?? (r as RegistrationVO).patientName,
+      phone: (rr['phone'] as string | undefined) ?? (rr['mobile'] as string | undefined) ?? (r as RegistrationVO).phone,
+      insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
+      deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
+      doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? ''
+    };
+  }, []);
 
   const loadPatients = useCallback(async (q?: string) => {
     try {
-      const params = q ? { q } : undefined;
+      const params = q ? { keyword: q } : undefined;
       const controller = new AbortController();
       const raw = await registrationApi.getList(params, { signal: controller.signal });
       logger.debug('[NurseStation] fetched registrations raw:', raw);
@@ -73,15 +110,17 @@ const NurseStation: React.FC = () => {
         ));
       }
       logger.debug('[NurseStation] normalized registrations:', mapped);
+      // 使用后端返回顺序，不在前端再次排序
       setPatients(mapped);
     } catch (err) {
       logApiError('NurseStation.loadPatients', err);
     }
   }, [normalizeReg]);
 
-  // 取消挂号（右键触发）
-  const handleCancelRegistration = async (e: React.MouseEvent, regId?: number) => {
-    e.preventDefault();
+
+
+  // 直接根据 id 取消（用于右键菜单调用）
+  const cancelById = async (regId?: number) => {
     if (!regId) return;
     const ok = confirm('确认要取消该挂号吗？此操作会将状态设为已取消。');
     if (!ok) return;
@@ -89,16 +128,13 @@ const NurseStation: React.FC = () => {
     const res = await registrationApi.cancel(regId, reason);
     if (res.success) {
       useStore.getState().notify('取消成功', 'success');
-      // 同步触发退费请求（退号同时进行退费）
       const ref = await registrationApi.refund(regId);
       if (ref.success) {
         setRefundNotice({ visible: true, message: '退号成功，挂号费已返回原账号' });
       } else {
         setRefundNotice({ visible: true, message: '退号成功，但退费失败：' + (ref.message ?? '') });
       }
-      // 删除本地列表中的该项
       setPatients(prev => prev.filter(p => p.id !== regId));
-      // 自动隐藏提示
       setTimeout(() => setRefundNotice({ visible: false, message: '' }), 3000);
     } else {
       useStore.getState().notify('取消失败: ' + (res.message ?? ''), 'error');
@@ -164,9 +200,36 @@ const NurseStation: React.FC = () => {
     }
   };
 
-  // 3. 身份证自动识别
+  // 右键菜单：显示菜单并记录选中项
+  const handleRowContextMenu = (e: React.MouseEvent, reg: RegistrationVO) => {
+    e.preventDefault();
+    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, reg });
+  };
+
+  const closeContextMenu = () => setContextMenu({ visible: false, x: 0, y: 0, reg: null });
+
+  const handleShowDetailsFromMenu = () => {
+    if (contextMenu.reg) setReceipt(contextMenu.reg);
+    closeContextMenu();
+  };
+
+  const handleCancelFromMenu = async () => {
+    if (contextMenu.reg) {
+      await cancelById(contextMenu.reg.id);
+    }
+    closeContextMenu();
+  };
+
+  // 点击页面其它位置时关闭菜单
+  useEffect(() => {
+    const onDocClick = () => { if (contextMenu.visible) closeContextMenu(); };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [contextMenu.visible]);
+
+  // 3. 身份证自动识别（仅在输入为 18 位时触发）
   const handleIdBlur = async () => {
-    if (formData.idCard.length >= 15) {
+    if (!formData.idCard || formData.idCard.trim().length !== 18) return;
       // 优先查询患者表
       const controller = new AbortController();
       try {
@@ -181,19 +244,22 @@ const NurseStation: React.FC = () => {
         
         const list = Array.isArray(result) ? result : [result];
         if (list.length > 0) {
-          setErrors({}); // 查到患者了，清除之前的验证错误
-          if (list.length === 1) {
+          setErrors({});
+            if (list.length === 1) {
             const p = list[0];
-            setFormData(prev => ({
-              ...prev,
-              name: p.name || prev.name,
-              gender: String(p.gender ?? prev.gender),
-              age: String(p.age ?? prev.age),
-              phone: p.phone ?? prev.phone,
-              idCard: p.id_card ?? prev.idCard,
-              insurance: p.insuranceType ?? prev.insurance,
-              type: '复诊'
-            }));
+            setFormData(prev => {
+              const gInferred = inferGenderFromId(p.id_card ?? undefined);
+              return ({
+                ...prev,
+                name: p.name || prev.name,
+                gender: String(typeof gInferred !== 'undefined' ? gInferred : (prev.gender ?? '1')),
+                age: String(p.age ?? prev.age),
+                phone: p.phone ?? prev.phone,
+                idCard: p.id_card ?? prev.idCard,
+                insurance: p.insuranceType ?? prev.insurance,
+                type: '复诊'
+              });
+            });
           } else {
             setOldPatients(list);
           }
@@ -202,7 +268,6 @@ const NurseStation: React.FC = () => {
         if (isCanceledError(err)) return;
         logApiError('NurseStation.handleIdBlur', err);
       }
-    }
   };
 
   const handleSearchOld = async () => {
@@ -234,26 +299,29 @@ const NurseStation: React.FC = () => {
   };
 
   const fillFromOld = (p: Patient) => {
-    setFormData(prev => ({
-      ...prev,
-      name: p.name || prev.name,
-      gender: String(p.gender ?? prev.gender),
-      age: String(p.age ?? prev.age),
-      phone: p.phone ?? prev.phone,
-      idCard: p.id_card ?? prev.idCard,
-      insurance: p.insuranceType ?? prev.insurance,
-      type: '复诊'
-    }));
+    setFormData(prev => {
+      const gInferred = inferGenderFromId(p.id_card ?? undefined);
+      return ({
+        ...prev,
+        name: p.name || prev.name,
+        gender: String(typeof gInferred !== 'undefined' ? gInferred : (prev.gender ?? '1')),
+        age: String(p.age ?? prev.age),
+        phone: p.phone ?? prev.phone,
+        idCard: p.id_card ?? prev.idCard,
+        insurance: p.insuranceType ?? prev.insurance,
+        type: '复诊'
+      });
+    });
     setOldPatients([]);
   };
 
   // 4. 提交挂号
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    // 前端验证，并在 UI 上显示错误
+    // 前端验证，并在 UI 上显示错误（只接受 18 位身份证）
     const newErrors: Record<string, string> = {};
     if (!formData.name || !formData.name.trim()) newErrors.name = '请输入患者姓名';
-    if (!formData.idCard || formData.idCard.trim().length < 15) newErrors.idCard = '请输入有效身份证号';
+    if (!formData.idCard || formData.idCard.trim().length !== 18) newErrors.idCard = '请输入18位身份证号';
     if (!formData.phone || formData.phone.trim().length < 5) newErrors.phone = '请输入联系电话';
     if (!formData.doctorId) newErrors.doctor = '请选择医生';
     if (Object.keys(newErrors).length > 0) {
@@ -288,7 +356,7 @@ const NurseStation: React.FC = () => {
       setLoading(false);
 
       if (res.success && res.data) {
-      // 归一化后更新列表与回执显示
+      // 归一化后显示回执，并使用后端顺序刷新列表
       const normalizeReg = (r: ReceivedRegistration): RegistrationVO => ({
         ...(r as RegistrationVO),
         insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
@@ -296,10 +364,11 @@ const NurseStation: React.FC = () => {
         doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? ''
       });
       const normalized = normalizeReg(res.data);
-      setPatients([normalized, ...patients]); // 更新列表
       setReceipt(normalized);
       // 重置表单，但保留科室选择
-      setFormData(prev => ({ ...prev, name: '', age: '', idCard: '', phone: '' })); 
+      setFormData(prev => ({ ...prev, name: '', age: '', idCard: '', phone: '' }));
+      // 重新从后端加载列表以保证顺序与服务器一致
+      try { await loadPatients(); } catch (e) { logger.debug('refresh after register failed', e); }
       } else {
         useStore.getState().notify('挂号失败: ' + (res.message ?? '未知错误'), 'error');
       }
@@ -401,10 +470,10 @@ const NurseStation: React.FC = () => {
                 {errors.name && <div className="text-xs text-red-500 mt-1">{errors.name}</div>}
               </div>
 
-              <select className="p-3 border rounded-lg text-sm bg-white" value={formData.gender} onChange={e => setFormData({...formData, gender: e.target.value})}>
-                <option value="1">男</option>
-                <option value="0">女</option>
-              </select>
+              <div className="p-3 border rounded-lg text-sm bg-white flex items-center justify-between">
+                <div className="text-sm text-slate-700">{getGenderLabel({ idCard: formData.idCard })}</div>
+                <input type="hidden" name="gender" value={formData.gender} />
+              </div>
 
               <div className="relative">
                 <input type="number" className="w-full p-3 border rounded-lg text-sm" placeholder="年龄" value={formData.age} onChange={e => setFormData({...formData, age: e.target.value})} />
@@ -530,9 +599,9 @@ const NurseStation: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-slate-50">
               {patients.map(p => (
-                <tr key={p.id} className="hover:bg-slate-50 transition-colors" onContextMenu={e => handleCancelRegistration(e, p.id)}>
+                <tr key={p.id} className="hover:bg-slate-50 transition-colors" onContextMenu={e => handleRowContextMenu(e, p)}>
                   <td className="p-4 pl-6">
-                    <span className="font-mono font-bold text-slate-700 bg-slate-100 px-2 py-1 rounded">{p.sequence}号</span>
+                    <span className="font-mono font-bold text-slate-700 bg-slate-100 px-2 py-1 rounded">{p.queueNo ? `${p.queueNo}号` : (typeof p.sequence !== 'undefined' && p.sequence !== null ? `${p.sequence}号` : '-')}</span>
                   </td>
                   <td className="p-4">
                     <div className="font-medium text-slate-800">{p.patientName}</div>
@@ -624,6 +693,14 @@ const NurseStation: React.FC = () => {
         <div className="bg-white border p-4 rounded-lg shadow-md w-72">
           <div className="font-medium text-slate-800">退费提示</div>
           <div className="text-sm text-slate-600 mt-2">{refundNotice.message}</div>
+        </div>
+      </div>
+    )}
+    {contextMenu.visible && contextMenu.reg && (
+      <div style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 60 }} onClick={e => e.stopPropagation()}>
+        <div className="bg-white border rounded shadow-md py-1">
+          <button onClick={handleShowDetailsFromMenu} className="block px-4 py-2 text-sm w-full text-left">查看挂号单</button>
+          <button onClick={handleCancelFromMenu} className="block px-4 py-2 text-sm w-full text-left text-red-600">退号</button>
         </div>
       </div>
     )}

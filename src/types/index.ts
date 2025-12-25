@@ -199,6 +199,32 @@ export interface MedicalRecord {
   updated_by?: number | null;
 }
 
+// 病历详情 VO (API 响应)
+export interface MedicalRecordVO {
+  mainId: number;
+  recordNo: string;
+  registrationId: number;
+  patientId: number;
+  patientName: string;
+  doctorId: number;
+  doctorName: string;
+  chiefComplaint: string;
+  presentIllness: string;
+  pastHistory: string;
+  personalHistory: string;
+  familyHistory: string;
+  physicalExam: string;
+  auxiliaryExam: string;
+  diagnosis: string;
+  diagnosisCode: string;
+  treatmentPlan: string;
+  doctorAdvice: string;
+  status: number;
+  visitTime: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // his_prescription
 export interface Prescription {
   main_id: number;
