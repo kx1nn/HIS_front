@@ -170,6 +170,25 @@ export interface Drug {
   uiStatus?: 'normal' | 'low_stock' | 'expired';
 }
 
+// 药品详情 VO (API 响应)
+export interface MedicineVO {
+  mainId: number;              // 药品ID
+  medicineCode: string;        // 药品编码
+  name: string;                // 药品名称
+  genericName?: string;        // 通用名称
+  retailPrice: number;         // 零售价格
+  stockQuantity: number;       // 库存数量
+  status: number;              // 状态（0=停用, 1=启用）
+  specification?: string;      // 规格
+  unit?: string;               // 单位
+  dosageForm?: string;         // 剂型
+  manufacturer?: string;       // 生产厂家
+  category?: string;           // 药品分类
+  isPrescription: number;      // 是否处方药（0=否, 1=是）
+  createdAt?: string;          // 创建时间
+  updatedAt?: string;          // 更新时间
+}
+
 // his_medical_record
 export interface MedicalRecord {
   main_id: number;
@@ -223,6 +242,45 @@ export interface MedicalRecordVO {
   visitTime: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// 患者详情 VO
+export interface PatientDetailVO {
+  patientId: number;
+  patientNo: string;
+  name: string;
+  gender: number;
+  genderDesc: string;
+  age: number;
+  birthDate: string;
+  phone: string;
+  idCard: string;
+  address: string;
+  medicalCardNo: string;
+  bloodType: string;
+  allergyHistory: string;
+  medicalHistory: string;
+  emergencyContact: string;
+  emergencyPhone: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// 病历保存 DTO
+export interface MedicalRecordDTO {
+  registrationId: number;
+  chiefComplaint?: string;
+  presentIllness?: string;
+  pastHistory?: string;
+  personalHistory?: string;
+  familyHistory?: string;
+  physicalExam?: string;
+  auxiliaryExam?: string;
+  diagnosis?: string;
+  diagnosisCode?: string;
+  treatmentPlan?: string;
+  doctorAdvice?: string;
+  status?: number; // 0=草稿, 1=已提交, 2=已审核
 }
 
 // his_prescription
@@ -281,6 +339,7 @@ export interface PrescriptionItemVO {
   spec?: string | null;
   count: number;
   usage?: string | null;
+  medicineId?: number;
 }
 
 export interface PrescriptionVO {
@@ -320,4 +379,93 @@ export interface Charge {
   remark?: string | null;
   created_by?: number | null;
   updated_by?: number | null;
+}
+
+// his_charge_detail
+export interface ChargeDetail {
+  main_id: number;
+  charge_main_id: number;
+  item_type: number; // 1: Drug, 2: Service, 3: Registration
+  item_id: number;
+  item_name: string;
+  unit_price: number;
+  quantity: number;
+  amount: number;
+  is_deleted: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// UI VO
+export interface ChargeDetailVO {
+  itemType: string;
+  itemName: string;
+  itemAmount: number;
+  // 为了兼容现有 UI，保留可选字段
+  id?: number;
+  name?: string;
+  price?: number;
+  quantity?: number;
+  amount?: number;
+  type?: string;
+}
+
+export interface ChargeVO {
+  id: number;
+  chargeNo: string;
+  patientId: number;
+  patientName: string;
+  totalAmount: number;
+  status: number; // 0: Unpaid, 1: Paid, 2: Refunded
+  statusDesc: string;
+  details: ChargeDetailVO[];
+  createdAt: string;
+  // 兼容字段
+  createTime?: string;
+  items?: ChargeDetailVO[];
+}
+
+export interface CreateChargeDTO {
+  registrationId: number;
+  prescriptionIds?: number[];
+}
+
+export interface PaymentDTO {
+  paymentMethod: number; // 1=现金, 2=银行卡, 3=微信, 4=支付宝, 5=医保
+  transactionNo?: string;
+  paidAmount: number;
+}
+
+export interface RefundRequest {
+  refundReason?: string;
+}
+
+export interface PaymentBreakdownVO {
+  [key: string]: {
+    count: number;
+    amount: number;
+  };
+}
+
+export interface RefundStatsVO {
+  count: number;
+  amount: number;
+}
+
+export interface DailySettlementVO {
+  date: string;
+  cashierName: string;
+  totalCharges: number;
+  totalAmount: number;
+  paymentBreakdown: PaymentBreakdownVO;
+  refunds: RefundStatsVO;
+  netCollection: number;
+}
+
+export interface PageChargeVO {
+  content: ChargeVO[];
+  totalElements: number;
+  totalPages: number;
+  size: number;
+  number: number;
 }

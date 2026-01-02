@@ -7,16 +7,18 @@ import PharmacyStation from './pages/PharmacyStation';
 import AdminPage from './pages/Admin';
 import PrivateRoute from './components/PrivateRoute';
 import ToastContainer from './components/ToastContainer';
+import ErrorBoundary from './components/ErrorBoundary';
 
 // 使用独立组件 `src/components/PrivateRoute.tsx` 提供路由守卫（包含 token 验证）
 
 // --- App 根组件 ---
 function App() {
   return (
-    <BrowserRouter>
-      <div className="h-full w-full overflow-hidden bg-slate-50">
-        <ToastContainer />
-        <Routes>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <div className="h-full w-full overflow-hidden bg-slate-50">
+          <ToastContainer />
+          <Routes>
           <Route path="/login" element={<LoginPage />} />
           
           {/* 护士站 */}
@@ -50,6 +52,7 @@ function App() {
         </Routes>
       </div>
     </BrowserRouter>
+  </ErrorBoundary>
   );
 }
 

@@ -7,6 +7,7 @@ import { basicApi, registrationApi, patientApi, logApiError, isCanceledError } f
 import * as logger from '../../services/logger';
 import type { RawDoctor, RawDepartment } from '../../services/api';
 import type { RegistrationVO, Patient } from '../../types';
+import { validateIdCard, validatePhone, validateName, validateAge, parseIdCard } from '../../utils/validators';
 
 const NurseStation: React.FC = () => {
   const { doctors, departments, user, logout } = useStore();
@@ -318,12 +319,40 @@ const NurseStation: React.FC = () => {
   // 4. 提交挂号
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    // 前端验证，并在 UI 上显示错误（只接受 18 位身份证）
+    // 前端验证，使用完整的校验逻辑
     const newErrors: Record<string, string> = {};
-    if (!formData.name || !formData.name.trim()) newErrors.name = '请输入患者姓名';
-    if (!formData.idCard || formData.idCard.trim().length !== 18) newErrors.idCard = '请输入18位身份证号';
-    if (!formData.phone || formData.phone.trim().length < 5) newErrors.phone = '请输入联系电话';
-    if (!formData.doctorId) newErrors.doctor = '请选择医生';
+    
+    // 姓名验证
+    const nameValidation = validateName(formData.name);
+    if (!nameValidation.valid) {
+      newErrors.name = nameValidation.message || '请输入患者姓名';
+    }
+    
+    // 身份证验证（含校验位）
+    const idCardValidation = validateIdCard(formData.idCard);
+    if (!idCardValidation.valid) {
+      newErrors.idCard = idCardValidation.message || '请输入有效的18位身份证号';
+    }
+    
+    // 手机号验证
+    const phoneValidation = validatePhone(formData.phone);
+    if (!phoneValidation.valid) {
+      newErrors.phone = phoneValidation.message || '请输入有效的手机号码';
+    }
+    
+    // 年龄验证
+    if (formData.age) {
+      const ageValidation = validateAge(formData.age);
+      if (!ageValidation.valid) {
+        newErrors.age = ageValidation.message || '请输入有效年龄';
+      }
+    }
+    
+    // 医生验证
+    if (!formData.doctorId) {
+      newErrors.doctor = '请选择医生';
+    }
+    
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -331,12 +360,15 @@ const NurseStation: React.FC = () => {
 
     setLoading(true);
 
+    // 从身份证解析信息
+    const idCardInfo = parseIdCard(formData.idCard);
+
     // 构造数据
     const payload = {
       patientName: formData.name,
       idCard: formData.idCard,
-      gender: Number(formData.gender),
-      age: Number(formData.age) || 0,
+      gender: idCardInfo?.gender ?? Number(formData.gender),
+      age: idCardInfo?.age ?? (Number(formData.age) || 0),
       phone: formData.phone,
       deptId: Number(formData.deptId),
       doctorId: Number(formData.doctorId),
@@ -379,7 +411,7 @@ const NurseStation: React.FC = () => {
     <>
     <div className="flex h-full gap-4 p-4 bg-slate-50 overflow-hidden">
       {/* --- 左侧：挂号表单 --- */}
-      <div className="w-[420px] bg-white rounded-xl shadow-sm flex flex-col border border-slate-200">
+      <div className="w-105 bg-white rounded-xl shadow-sm flex flex-col border border-slate-200">
         <div className="p-5 border-b bg-linear-to-r from-teal-50 to-white flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-teal-100 text-teal-600 rounded-lg"><Plus size={20} /></div>

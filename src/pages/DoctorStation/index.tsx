@@ -6,12 +6,9 @@ import {
   Trash2, Send, Activity, Stethoscope, LogOut
 } from 'lucide-react';
 import { useStore } from '../../store/store';
-import { registrationApi, isCanceledError } from '../../services/api';
+import { registrationApi, isCanceledError, pharmacyApi, doctorApi, chargeApi } from '../../services/api';
 import * as logger from '../../services/logger';
-import type { RegistrationVO, Drug, MedicalRecordVO } from '../../types';
-
-// 药品数据由后端提供；前端初始为空
-const DRUGS: Drug[] = [];
+import type { RegistrationVO, MedicalRecordVO, MedicineVO, PatientDetailVO, MedicalRecordDTO, PrescriptionVO } from '../../types';
 
 // 处方项类型
 interface PrescriptionItem {
@@ -35,12 +32,19 @@ const DoctorStation: React.FC = () => {
   const [showAll, setShowAll] = useState(false);
   
   // 病历表单
-  const [medicalRecord, setMedicalRecord] = useState({
-    symptom: '',   // 主诉
-    history: '',   // 现病史
-    diagnosis: '',  // 初步诊断
-    doctorAdvice: '' // 医嘱
+  const [medicalRecord, setMedicalRecord] = useState<Partial<MedicalRecordDTO>>({
+    chiefComplaint: '',
+    presentIllness: '',
+    diagnosis: '',
+    doctorAdvice: '',
+    pastHistory: '',
+    personalHistory: '',
+    familyHistory: ''
   });
+
+  const [patientDetail, setPatientDetail] = useState<PatientDetailVO | null>(null);
+  const [drugSearchResults, setDrugSearchResults] = useState<MedicineVO[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
 
   // 历史病历弹窗
   const [historyModal, setHistoryModal] = useState<{
@@ -74,10 +78,9 @@ const DoctorStation: React.FC = () => {
     const controller = new AbortController();
     const fetchPatients = async () => {
       try {
-        const apiModule = await import('../../services/api');
         // 后端现在从 JWT 中解析当前医生信息并返回对应候诊列表，前端无需传入 doctorId
         logger.debug('DoctorStation.getWaitingList showAll:', showAll, 'user:', user);
-        const list = await apiModule.doctorApi.getWaitingList(showAll, { signal: controller.signal });
+        const list = await doctorApi.getWaitingList(showAll, { signal: controller.signal });
         if (!mounted) return;
         setPatients(list.filter(p => p.status !== 2));
       } catch (err: unknown) {
@@ -111,14 +114,39 @@ const DoctorStation: React.FC = () => {
     return () => { mounted = false; controller.abort(); };
   }, [showAll, user?.relatedId, user?.userId, user?.role, user, navigate]);
 
-  // 切换患者时，重置表单
+  // 切换患者时，加载详情和草稿
   useEffect(() => {
     if (activePatientId) {
-      // 实际项目中这里应该调用接口获取该患者的历史病历
-      setMedicalRecord({ symptom: '', history: '', diagnosis: '', doctorAdvice: '' });
+      setPatientDetail(null);
       setPrescriptions([]);
+      
+      // 1. 获取患者详情
+      doctorApi.getPatientDetail(activePatientId).then(setPatientDetail);
+
+      // 2. 获取病历草稿
+      const reg = patients.find(p => p.id === activePatientId);
+      if (reg) {
+        doctorApi.getMedicalRecordByRegistrationId(reg.id).then(record => {
+          if (record) {
+            setMedicalRecord({
+              chiefComplaint: record.chiefComplaint || '',
+              presentIllness: record.presentIllness || '',
+              diagnosis: record.diagnosis || '',
+              doctorAdvice: record.doctorAdvice || '',
+              pastHistory: record.pastHistory || '',
+              personalHistory: record.personalHistory || '',
+              familyHistory: record.familyHistory || ''
+            });
+          } else {
+            setMedicalRecord({
+              chiefComplaint: '', presentIllness: '', diagnosis: '', doctorAdvice: '',
+              pastHistory: '', personalHistory: '', familyHistory: ''
+            });
+          }
+        });
+      }
     }
-  }, [activePatientId]);
+  }, [activePatientId, patients]);
 
   // loadPatients 移入 effect 内，避免缺失依赖警告
 
@@ -138,7 +166,6 @@ const DoctorStation: React.FC = () => {
     
     if (patient.patientId) {
       try {
-        const { doctorApi } = await import('../../services/api');
         const list = await doctorApi.getPatientHistory(patient.patientId);
         setHistoryModal(prev => ({ ...prev, records: list, loading: false }));
       } catch {
@@ -162,7 +189,6 @@ const DoctorStation: React.FC = () => {
     }
     
     try {
-      const { doctorApi } = await import('../../services/api');
       const detail = await doctorApi.getMedicalRecordDetail(record.mainId);
       if (detail) {
         setHistoryModal(prev => ({ ...prev, selectedRecord: detail }));
@@ -182,26 +208,56 @@ const DoctorStation: React.FC = () => {
     notify(`正在呼叫 ${patient.sequence}号 ${patient.patientName} 到诊室...`, 'info');
   };
 
-  // 2. 添加药品
-  const handleAddDrug = (drug: Drug) => {
-    const existing = prescriptions.find(p => p.drugId === drug.id);
+  // 2. 药品搜索与添加
+  const handleDrugSearch = async (term: string) => {
+    setSearchTerm(term);
+    if (term.trim()) {
+      // 防抖处理建议在组件外或使用 hook，这里简化处理
+      const results = await pharmacyApi.searchMedicines(term);
+      setDrugSearchResults(results);
+    } else {
+      setDrugSearchResults([]);
+    }
+  };
+
+  const handleAddDrug = (drug: MedicineVO) => {
+    const existing = prescriptions.find(p => p.drugId === drug.mainId);
     if (existing) {
       setPrescriptions(prev => prev.map(p => 
-        p.drugId === drug.id ? { ...p, count: p.count + 1 } : p
+        p.drugId === drug.mainId ? { ...p, count: p.count + 1 } : p
       ));
     } else {
       setPrescriptions(prev => [...prev, {
         id: Date.now(),
-        drugId: drug.id,
+        drugId: drug.mainId,
         name: drug.name,
-        spec: drug.spec,
-        price: drug.price,
+        spec: drug.specification || '',
+        price: drug.retailPrice,
         count: 1,
         usage: '每日3次, 每次1粒' // 默认用法
       }]);
     }
     setShowDrugSearch(false);
     setSearchTerm('');
+  };
+
+  // 保存草稿
+  const handleSaveDraft = async () => {
+    if (!activePatient) return;
+    setIsSaving(true);
+    try {
+      const dto: MedicalRecordDTO = {
+        registrationId: activePatient.id,
+        ...medicalRecord,
+        status: 0 // Draft
+      };
+      await doctorApi.saveMedicalRecord(dto);
+      notify('草稿保存成功', 'success');
+    } catch {
+      notify('保存失败', 'error');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // 3. 完成诊疗
@@ -211,9 +267,6 @@ const DoctorStation: React.FC = () => {
       notify('请填写初步诊断结果', 'warn');
       return;
     }
-
-    // 使用自定义卡片式确认框代替原生 confirm
-    // 这里我们简单实现一个状态来控制确认弹窗的显示
     setShowConfirmModal(true);
   };
 
@@ -221,16 +274,60 @@ const DoctorStation: React.FC = () => {
     if (!activePatient) return;
     setShowConfirmModal(false);
     setLoading(true);
-    // 调用后端更新状态
-    const { doctorApi } = await import('../../services/api');
-    const ok = await doctorApi.updateRegistrationStatus(activePatient.id, 1);
-    setLoading(false);
-    if (ok) {
+
+    try {
+      // 1. 保存并提交病历
+      const dto: MedicalRecordDTO = {
+        registrationId: activePatient.id,
+        ...medicalRecord,
+        status: 1 // Submitted
+      };
+      const savedRecord = await doctorApi.saveMedicalRecord(dto);
+      if (savedRecord) {
+        await doctorApi.submitMedicalRecord(savedRecord.mainId);
+      }
+
+      // 2. 发送处方
+      if (prescriptions.length > 0) {
+        const rx: PrescriptionVO = {
+          id: 0,
+          patientName: activePatient.patientName,
+          gender: activePatient.gender,
+          age: activePatient.age,
+          regNo: activePatient.regNo,
+          totalAmount: prescriptions.reduce((sum, item) => sum + (item.price * item.count), 0),
+          items: prescriptions.map(p => ({
+            drugName: p.name,
+            spec: p.spec,
+            count: p.count,
+            usage: p.usage,
+            medicineId: p.drugId
+          }))
+        };
+        const sentRx = await pharmacyApi.sendPrescription(rx);
+        if (sentRx) {
+          // 3. 生成收费单 (如果有处方)
+          await chargeApi.create({
+            registrationId: activePatient.id,
+            prescriptionIds: [sentRx.id]
+          });
+        }
+      } else {
+        // 如果没有处方，也可能需要生成一个纯诊疗费的收费单（视业务需求而定）
+        // 目前仅在有处方时生成
+      }
+
+      // 4. 更新挂号状态
+      await doctorApi.updateRegistrationStatus(activePatient.id, 1);
+
       setPatients(prev => prev.filter(p => p.id !== activePatientId));
       setActivePatientId(null);
-      notify('诊疗完成！病历已归档，处方已发送至药房。', 'success');
-    } else {
+      notify('诊疗完成！病历已归档，处方已发送至药房并生成收费单。', 'success');
+    } catch (e) {
+      logger.error('DoctorStation.submit', e);
       notify('操作失败，请重试', 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -342,6 +439,12 @@ const DoctorStation: React.FC = () => {
                     <span>{activePatient.age}岁</span>
                     <span className="w-px h-3 bg-slate-300"></span>
                     <span className="font-mono">MRN: {activePatient.mrn}</span>
+                    {patientDetail?.allergyHistory && (
+                      <>
+                        <span className="w-px h-3 bg-slate-300"></span>
+                        <span className="text-red-500 font-bold">过敏史: {patientDetail.allergyHistory}</span>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -356,10 +459,19 @@ const DoctorStation: React.FC = () => {
               <div className="max-w-5xl mx-auto space-y-6">
                 
                 <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b pb-2">
-                    <FileText size={18} className="text-blue-500"/> 
-                    病历文书
-                  </h3>
+                  <div className="flex justify-between items-center border-b pb-2 mb-4">
+                    <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                      <FileText size={18} className="text-blue-500"/> 
+                      病历文书
+                    </h3>
+                    <button 
+                      onClick={handleSaveDraft} 
+                      disabled={isSaving}
+                      className="text-xs text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                    >
+                      {isSaving ? '保存中...' : '保存草稿'}
+                    </button>
+                  </div>
                   
                   <div className="space-y-4">
                     <div>
@@ -368,8 +480,8 @@ const DoctorStation: React.FC = () => {
                         className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
                         rows={2}
                         placeholder="患者主要不适症状..."
-                        value={medicalRecord.symptom}
-                        onChange={e => setMedicalRecord({...medicalRecord, symptom: e.target.value})}
+                        value={medicalRecord.chiefComplaint || ''}
+                        onChange={e => setMedicalRecord({...medicalRecord, chiefComplaint: e.target.value})}
                       />
                     </div>
                     <div>
@@ -378,9 +490,26 @@ const DoctorStation: React.FC = () => {
                         className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
                         rows={4}
                         placeholder="起病情况、主要症状特点、病情发展..."
-                        value={medicalRecord.history}
-                        onChange={e => setMedicalRecord({...medicalRecord, history: e.target.value})}
+                        value={medicalRecord.presentIllness || ''}
+                        onChange={e => setMedicalRecord({...medicalRecord, presentIllness: e.target.value})}
                       />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-600 mb-1.5">既往史</label>
+                        <textarea 
+                          className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
+                          rows={2}
+                          value={medicalRecord.pastHistory || ''}
+                          onChange={e => setMedicalRecord({...medicalRecord, pastHistory: e.target.value})}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-600 mb-1.5">过敏史</label>
+                        <div className="p-3 border border-slate-200 rounded-lg text-sm bg-slate-50 min-h-20">
+                          {patientDetail?.allergyHistory || '无记录'}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -468,27 +597,30 @@ const DoctorStation: React.FC = () => {
                   placeholder="搜索药品名称/拼音..." 
                   className="w-full pl-9 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:border-blue-500 outline-none"
                   value={searchTerm}
-                  onChange={e => setSearchTerm(e.target.value)}
+                  onChange={e => handleDrugSearch(e.target.value)}
                 />
                 <button onClick={() => setShowDrugSearch(false)} className="absolute right-3 top-3 text-xs text-slate-400 hover:text-slate-600">关闭</button>
               </div>
               <div className="space-y-2 overflow-y-auto max-h-[calc(100%-60px)] custom-scrollbar">
-                {DRUGS.filter(d => d.name.includes(searchTerm)).map(drug => (
+                {drugSearchResults.map(drug => (
                   <div 
-                    key={drug.id} 
+                    key={drug.mainId} 
                     onClick={() => handleAddDrug(drug)}
                     className="p-3 border border-slate-100 rounded-lg hover:border-blue-300 hover:bg-blue-50 cursor-pointer transition-all group"
                   >
                     <div className="flex justify-between">
                       <span className="font-bold text-slate-700 text-sm">{drug.name}</span>
-                      <span className="text-orange-600 font-medium text-sm">¥{drug.price}</span>
+                      <span className="text-orange-600 font-medium text-sm">¥{drug.retailPrice}</span>
                     </div>
                     <div className="text-xs text-slate-400 mt-1 flex justify-between">
-                      <span>{drug.spec}</span>
-                      <span className="group-hover:text-blue-600">库存: {drug.stock}</span>
+                      <span>{drug.specification}</span>
+                      <span className="group-hover:text-blue-600">库存: {drug.stockQuantity}</span>
                     </div>
                   </div>
                 ))}
+                {searchTerm && drugSearchResults.length === 0 && (
+                  <div className="text-center text-slate-400 py-4 text-sm">未找到相关药品</div>
+                )}
               </div>
             </div>
           )}
