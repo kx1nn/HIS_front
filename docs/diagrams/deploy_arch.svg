@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="320" viewBox="0 0 980 320">
+  <defs>
+    <marker id="arrow4" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f855a" />
+    </marker>
+    <style>
+      .box{fill:#fff;stroke:#2f855a;stroke-width:2;rx:8}
+      .text{font-family:Arial, Helvetica, sans-serif;font-size:13px;fill:#111}
+    </style>
+  </defs>
+
+  <rect x="30" y="30" width="140" height="40" class="box" />
+  <text x="100" y="55" text-anchor="middle" class="text">用户浏览器</text>
+
+  <rect x="200" y="30" width="180" height="40" class="box" />
+  <text x="290" y="55" text-anchor="middle" class="text">CDN / 静态托管</text>
+
+  <rect x="420" y="30" width="200" height="40" class="box" />
+  <text x="520" y="55" text-anchor="middle" class="text">前端应用（React）</text>
+
+  <rect x="660" y="10" width="260" height="40" class="box" />
+  <text x="790" y="35" text-anchor="middle" class="text">API 网关 / 反向代理</text>
+
+  <rect x="420" y="110" width="200" height="40" class="box" />
+  <text x="520" y="135" text-anchor="middle" class="text">鉴权服务（Auth）</text>
+
+  <rect x="660" y="110" width="260" height="40" class="box" />
+  <text x="790" y="135" text-anchor="middle" class="text">微服务（收费/药房/医生/报表）</text>
+
+  <rect x="660" y="200" width="260" height="60" class="box" />
+  <text x="790" y="225" text-anchor="middle" class="text">数据库集群 / 持久化存储</text>
+
+  <rect x="20" y="250" width="220" height="40" class="box" />
+  <text x="130" y="275" text-anchor="middle" class="text">监控（Prometheus / Grafana）</text>
+
+  <line x1="170" y1="50" x2="200" y2="50" stroke="#2f855a" stroke-width="2" marker-end="url(#arrow4)" />
+  <line x1="380" y1="50" x2="420" y2="50" stroke="#2f855a" stroke-width="2" marker-end="url(#arrow4)" />
+  <line x1="620" y1="50" x2="660" y2="30" stroke="#2f855a" stroke-width="2" marker-end="url(#arrow4)" />
+  <line x1="520" y1="90" x2="520" y2="110" stroke="#2f855a" stroke-width="2" marker-end="url(#arrow4)" />
+  <line x1="760" y1="150" x2="760" y2="200" stroke="#2f855a" stroke-width="2" marker-end="url(#arrow4)" />
+
+  <text x="490" y="18" text-anchor="middle" class="text" style="font-weight:bold;">部署架构示意图</text>
+</svg>

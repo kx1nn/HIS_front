@@ -37,12 +37,19 @@ const API_BASE_URL = IS_DEV ? '/api' : (ENV_BASE ? `${ENV_BASE.replace(/\/$/, ''
 const AUTH_BASE_URL = IS_DEV ? '' : (ENV_BASE ? ENV_BASE.replace(/\/$/, '') : '');
 
 // 业务接口实例 (带 /api 前缀)
+/**
+ * 主要的 Axios 实例，用于常规业务请求（带 /api 前缀）
+ * 会自动在请求拦截器中注入 Authorization
+ */
 export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 5000,
 });
 
 // 认证接口实例 (baseURL为空，接口路径直接用 /auth/login 等，通过代理转发)
+/**
+ * 认证专用的 Axios 实例（用于登录/刷新等不带 /api 前缀的认证接口）
+ */
 export const authInstance = axios.create({
   baseURL: AUTH_BASE_URL,
   timeout: 5000,

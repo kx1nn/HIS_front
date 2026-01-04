@@ -9,6 +9,10 @@ import type { RawDoctor, RawDepartment } from '../../services/api';
 import type { RegistrationVO, Patient } from '../../types';
 import { validateIdCard, validatePhone, validateName, validateAge, parseIdCard } from '../../utils/validators';
 
+/**
+ * 护士工作台组件
+ * 功能：挂号、患者信息管理与收费入口
+ */
 const NurseStation: React.FC = () => {
   const { doctors, departments, user, logout } = useStore();
   const navigate = useNavigate();

@@ -3,6 +3,10 @@ import { create } from 'zustand';
 import type { User, Doctor, Department } from '../types';
 
 export interface AppState {
+  /**
+   * 全局应用状态（Zustand store）
+   * 包含用户、token、通知与主数据等
+   */
   // 用户状态
   user: User | null;
   token: string | null;
@@ -30,6 +34,10 @@ import { getUser, getToken, setUser as __setUser, setToken as __setToken, remove
 const initialUser = getUser() as User | null;
 const initialToken = getToken();
 
+/**
+ * 创建并导出全局状态 Hook（Zustand）
+ * 使用示例：const { user, notify } = useStore();
+ */
 export const useStore = create<AppState>((set) => ({
   user: initialUser,
   token: initialToken,

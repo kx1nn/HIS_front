@@ -3,6 +3,10 @@ import { Search, CreditCard, FileText, CheckCircle, XCircle } from 'lucide-react
 import { chargeApi, logApiError } from '../../services/api';
 import type { ChargeVO } from '../../types';
 
+/**
+ * 护士收费管理页面组件
+ * 功能：查询收费单、发起支付、退款与查看发票
+ */
 const ChargeManagement: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [charges, setCharges] = useState<ChargeVO[]>([]);

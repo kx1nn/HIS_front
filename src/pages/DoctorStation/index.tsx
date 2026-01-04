@@ -21,6 +21,10 @@ interface PrescriptionItem {
   usage: string;
 }
 
+/**
+ * 医生工作台组件
+ * 支持：候诊列表、接诊、病历查看与开立医嘱
+ */
 const DoctorStation: React.FC = () => {
   const { user, notify, logout } = useStore();
   const navigate = useNavigate();

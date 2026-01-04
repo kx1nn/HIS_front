@@ -9,6 +9,10 @@ import { useStore } from '../../store/store';
 import * as logger from '../../services/logger';
 import type { Drug, PrescriptionVO, PrescriptionItemVO } from '../../types';
 
+/**
+ * 药房工作台组件
+ * 功能：查看库存、配药与发药操作
+ */
 const PharmacyStation: React.FC = () => {
   const { user, logout } = useStore();
   const navigate = useNavigate();
