@@ -19,17 +19,20 @@ let charges = [
 
 const handlers: RequestHandler[] = [
     // GET 列表
-    http.get('/api/cashier/charges', (req, res, ctx) => {
-        return res(ctx.status(200), ctx.json({ code: 0, data: { content: charges, total: charges.length } }));
+    http.get('/api/cashier/charges', (req) => {
+        return {
+            status: 200,
+            body: { code: 0, data: { content: charges, total: charges.length } }
+        };
     }),
 
     // POST 支付
-    http.post('/api/cashier/charges/:id/pay', async (req, res, ctx) => {
+    http.post('/api/cashier/charges/:id/pay', async (req) => {
         const { id } = req.params;
         const nid = Number(id);
         const idx = charges.findIndex(c => c.id === nid);
         if (idx === -1) {
-            return res(ctx.status(404), ctx.json({ code: 404, message: '未找到收费单' }));
+            return { status: 404, body: { code: 404, message: '未找到收费单' } };
         }
 
         // 简单模拟：将状态改为已缴费
@@ -39,16 +42,16 @@ const handlers: RequestHandler[] = [
             statusDesc: '已缴费'
         };
 
-        return res(ctx.status(200), ctx.json({ code: 0, data: charges[idx] }));
+        return { status: 200, body: { code: 0, data: charges[idx] } };
     }),
 
     // POST 退费
-    http.post('/api/cashier/charges/:id/refund', async (req, res, ctx) => {
+    http.post('/api/cashier/charges/:id/refund', async (req) => {
         const { id } = req.params;
         const nid = Number(id);
         const idx = charges.findIndex(c => c.id === nid);
         if (idx === -1) {
-            return res(ctx.status(404), ctx.json({ code: 404, message: '未找到收费单' }));
+            return { status: 404, body: { code: 404, message: '未找到收费单' } };
         }
 
         charges[idx] = {
@@ -57,7 +60,7 @@ const handlers: RequestHandler[] = [
             statusDesc: '已退费'
         };
 
-        return res(ctx.status(200), ctx.json({ code: 0, data: charges[idx] }));
+        return { status: 200, body: { code: 0, data: charges[idx] } };
     })
 ];
 
