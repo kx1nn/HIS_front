@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import ChargeManagement from '../../pages/NurseStation/ChargeManagement';
+import ChargeManagement from '../pages/NurseStation/ChargeManagement';
 import { vi } from 'vitest';
 import { __resetMockData } from '../../test/mocks/handlers';
 
