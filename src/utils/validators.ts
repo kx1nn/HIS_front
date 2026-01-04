@@ -3,6 +3,8 @@
 
 /**
  * 验证18位身份证号码（含校验位）
+ * @param id 身份证号码（18位）
+ * @returns 验证结果对象：{ valid: boolean; message?: string }
  */
 export function validateIdCard(id: string): { valid: boolean; message?: string } {
     if (!id || typeof id !== 'string') {
@@ -65,6 +67,8 @@ export function validateIdCard(id: string): { valid: boolean; message?: string }
 
 /**
  * 验证手机号码
+ * @param phone 手机号字符串
+ * @returns 验证结果对象：{ valid: boolean; message?: string }
  */
 export function validatePhone(phone: string): { valid: boolean; message?: string } {
     if (!phone || typeof phone !== 'string') {
@@ -83,6 +87,8 @@ export function validatePhone(phone: string): { valid: boolean; message?: string
 
 /**
  * 验证姓名
+ * @param name 姓名字符串
+ * @returns 验证结果对象：{ valid: boolean; message?: string }
  */
 export function validateName(name: string): { valid: boolean; message?: string } {
     if (!name || typeof name !== 'string') {
@@ -109,6 +115,8 @@ export function validateName(name: string): { valid: boolean; message?: string }
 
 /**
  * 验证年龄
+ * @param age 年龄数字或字符串
+ * @returns 验证结果对象：{ valid: boolean; message?: string }
  */
 export function validateAge(age: number | string): { valid: boolean; message?: string } {
     const ageNum = typeof age === 'string' ? parseInt(age, 10) : age;
@@ -130,6 +138,8 @@ export function validateAge(age: number | string): { valid: boolean; message?: s
 
 /**
  * 从身份证号提取信息
+ * @param id 身份证号码（18位）
+ * @returns 返回提取的信息对象或 null，格式：{ gender: 1|0, birthDate: 'YYYY-MM-DD', age: number }
  */
 export function parseIdCard(id: string): {
     gender: number; // 1: 男, 0: 女

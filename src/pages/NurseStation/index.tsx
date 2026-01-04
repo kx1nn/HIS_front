@@ -363,7 +363,14 @@ const NurseStation: React.FC = () => {
     // 从身份证解析信息
     const idCardInfo = parseIdCard(formData.idCard);
 
-    // 构造数据
+    // 生成支付流水号
+    const generateTransactionNo = (): string => {
+      const timestamp = Date.now();
+      const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+      return `WX${timestamp}${random}`; // 默认使用微信支付
+    };
+
+    // 构造数据（包含支付信息，一次性完成挂号和支付）
     const payload = {
       patientName: formData.name,
       idCard: formData.idCard,
@@ -374,35 +381,58 @@ const NurseStation: React.FC = () => {
       doctorId: Number(formData.doctorId),
       regFee: 20,
       insuranceType: formData.insurance,
-      type: formData.type
+      type: formData.type,
+      paymentMethod: 3, // 3=微信支付
+      transactionNo: generateTransactionNo()
     };
 
     logger.debug('register payload:', payload);
 
-    // 显示手机缴费提示卡片，三秒后继续挂号请求并显示回执
+    // 显示支付提示
     setPaymentAmount(payload.regFee);
     setShowPaymentPrompt(true);
+    
+    // 延迟3秒后执行挂号流程
     setTimeout(async () => {
       setShowPaymentPrompt(false);
-      const res = await registrationApi.create(payload);
-      setLoading(false);
+      
+      try {
+        // 创建挂号记录（后端会自动处理支付）
+        const res = await registrationApi.create(payload);
+        
+        setLoading(false);
 
-      if (res.success && res.data) {
-      // 归一化后显示回执，并使用后端顺序刷新列表
-      const normalizeReg = (r: ReceivedRegistration): RegistrationVO => ({
-        ...(r as RegistrationVO),
-        insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
-        deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
-        doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? ''
-      });
-      const normalized = normalizeReg(res.data);
-      setReceipt(normalized);
-      // 重置表单，但保留科室选择
-      setFormData(prev => ({ ...prev, name: '', age: '', idCard: '', phone: '' }));
-      // 重新从后端加载列表以保证顺序与服务器一致
-      try { await loadPatients(); } catch (e) { logger.debug('refresh after register failed', e); }
-      } else {
-        useStore.getState().notify('挂号失败: ' + (res.message ?? '未知错误'), 'error');
+        if (!res.success || !res.data) {
+          useStore.getState().notify('挂号失败: ' + (res.message ?? '未知错误'), 'error');
+          return;
+        }
+
+        // 归一化后显示回执
+        const normalizeReg = (r: ReceivedRegistration): RegistrationVO => ({
+          ...(r as RegistrationVO),
+          insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
+          deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
+          doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? ''
+        });
+        const normalized = normalizeReg(res.data);
+        setReceipt(normalized);
+        
+        // 重置表单，但保留科室选择
+        setFormData(prev => ({ ...prev, name: '', age: '', idCard: '', phone: '' }));
+        
+        // 重新从后端加载列表以保证顺序与服务器一致
+        try { 
+          await loadPatients(); 
+          logger.debug('[NurseStation] List refreshed after registration');
+        } catch (e) { 
+          logger.debug('refresh after register failed', e); 
+        }
+        
+        useStore.getState().notify('挂号成功并支付完成', 'success');
+      } catch (err) {
+        setLoading(false);
+        logger.error('Registration process failed:', err);
+        useStore.getState().notify('挂号流程出错', 'error');
       }
     }, 3000);
   };

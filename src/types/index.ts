@@ -1,6 +1,8 @@
 // src/types/index.ts
 
-// 用户身份信息
+/**
+ * 用户身份信息（用于路由守卫与界面显示）
+ */
 export interface User {
   role: 'doctor' | 'nurse' | 'admin' | 'pharmacy';
   name: string;
@@ -9,7 +11,9 @@ export interface User {
   relatedId?: number;
 }
 
-// 医生信息
+/**
+ * 医生信息（基础展示与排班数据）
+ */
 export interface Doctor {
   id: number;
   name: string;
@@ -26,7 +30,9 @@ export interface Department {
   name: string;
 }
 
-// 挂号提交表单 (DTO)
+/**
+ * 挂号提交表单 (DTO)
+ */
 export interface RegistrationDTO {
   patientName: string;
   idCard: string;
@@ -40,7 +46,9 @@ export interface RegistrationDTO {
   type: string; // 初诊/复诊
 }
 
-// 挂号列表展示数据 (VO)
+/**
+ * 挂号列表展示数据 (VO)，继承 DTO 并加入展示字段
+ */
 export interface RegistrationVO extends RegistrationDTO {
   id: number;
   regNo: string;      // 挂号单号 (如 REG2023...)
@@ -58,6 +66,9 @@ export interface RegistrationVO extends RegistrationDTO {
   deptName?: string;   // 方便展示
 }
 
+/**
+ * 患者基本信息（DB 表映射）
+ */
 export interface Patient {
   main_id: number; // 主键
   patient_no: string;
@@ -83,6 +94,34 @@ export interface Patient {
   // 可能由后端返回的扩展字段
   mrn?: string | null; // 病历号
   insuranceType?: string | null; // 医保类型文字
+}
+
+/**
+ * 药品信息（基础字段）
+ */
+// --- 药品数据 ---
+export interface Drug {
+  id: number;              // main_id
+  medicineCode: string;    // medicine_code
+  name: string;            // name
+  commonName?: string;     // generic_name
+  spec: string;            // specification
+  unit: string;            // unit
+  price: number;           // retail_price
+  stock: number;           // stock_quantity
+  manufacturer: string;    // manufacturer
+  category: string;        // category (原 type)
+  minStock: number;        // min_stock
+  expiryWarningDays: number; // expiry_warning_days
+  isPrescription: number;  // is_prescription (0/1)
+  dbStatus: number;        // status (1=启用, 0=停用)
+
+  batchNumber?: string;
+  productionDate?: string;
+  expiryDate?: string;
+
+  // UI 辅助状态
+  uiStatus?: 'normal' | 'low_stock' | 'expired';
 }
 
 // his_doctor

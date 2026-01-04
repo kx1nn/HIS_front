@@ -31,7 +31,10 @@ export type RawDepartment = {
 };
 
 const ENV_BASE = (import.meta.env.VITE_API_BASE as string) || '';
-const API_BASE_URL = ENV_BASE || '/api';
+// 开发环境使用相对路径（通过 Vite 代理），生产环境使用完整 URL
+const IS_DEV = import.meta.env.DEV;
+const API_BASE_URL = IS_DEV ? '/api' : (ENV_BASE ? `${ENV_BASE.replace(/\/$/, '')}/api` : '/api');
+const AUTH_BASE_URL = IS_DEV ? '' : (ENV_BASE ? ENV_BASE.replace(/\/$/, '') : '');
 
 // 业务接口实例 (带 /api 前缀)
 export const api = axios.create({
@@ -39,9 +42,9 @@ export const api = axios.create({
   timeout: 5000,
 });
 
-// 认证接口实例 (不带 /api 前缀)
+// 认证接口实例 (baseURL为空，接口路径直接用 /auth/login 等，通过代理转发)
 export const authInstance = axios.create({
-  baseURL: ENV_BASE || '/',
+  baseURL: AUTH_BASE_URL,
   timeout: 5000,
 });
 
@@ -146,7 +149,11 @@ const responseErrorInterceptor = (instance: AxiosInstance) => (error: AxiosError
 api.interceptors.response.use(res => res, responseErrorInterceptor(api));
 authInstance.interceptors.response.use(res => res, responseErrorInterceptor(authInstance));
 
-// 从后端响应数据中安全提取 message 字段
+/**
+ * 从后端响应数据中安全提取 message 字段
+ * @param data 后端返回的响应数据（可能为任意类型）
+ * @returns message 字符串或 undefined
+ */
 function extractMessageFromData(data: unknown): string | undefined {
   if (!data || typeof data !== 'object') return undefined;
   const d = data as Record<string, unknown>;
@@ -182,17 +189,35 @@ function normalizeResponse<T>(data: unknown): { success: boolean; data?: T; mess
 }
 
 // 统一错误记录，便于后续更改为上报
+/**
+ * 记录 API 错误（用于开发或上报）
+ * @param tag 错误来源标识
+ * @param err 捕获到的错误对象
+ */
 export function logApiError(tag: string, err: unknown) {
   const e = err as AxiosError | undefined;
+  // 忽略被取消的请求（开发模式下 React 严格模式会导致请求被取消）
+  if (isCanceledError(err)) {
+    return;
+  }
   logger.error(`${tag} error:`, e?.response?.status, e?.response?.data, e?.message);
 }
 
 // 导出一个辅助函数，便于组件创建取消控制器并在卸载时中止请求
+/**
+ * 创建一个 AbortController，用于取消请求
+ * @returns AbortController 实例
+ */
 export function makeAbortController(): AbortController {
   return new AbortController();
 }
 
 // 判断是否为请求被取消（Abort/axios cancel）
+/**
+ * 判断一个错误对象是否为请求被取消的错误
+ * @param e 任意错误对象
+ * @returns 如果是取消错误返回 true，否则 false
+ */
 export function isCanceledError(e: unknown): boolean {
   if (!e || typeof e !== 'object') return false;
   const o = e as Record<string, unknown>;
@@ -205,6 +230,10 @@ export function isCanceledError(e: unknown): boolean {
 export type LoginRequest = { username: string; password: string };
 export type LoginVO = { token: string; role?: string; realName?: string; userId?: number; relatedId?: number };
 
+/**
+ * 认证相关 API：login / logout / validate
+ * 方法返回统一格式：{ success: boolean; data?: T; message?: string }
+ */
 export const authApi = {
   login: async (payload: LoginRequest): Promise<{ success: boolean; data?: LoginVO; message?: string }> => {
     try {
@@ -244,6 +273,9 @@ export const authApi = {
 };
 
 
+/**
+ * 挂号相关 API（护士工作台）
+ */
 export const registrationApi = {
   // 1. 提交挂号接口
   create: async (data: RegistrationDTO): Promise<{ success: boolean; data?: RegistrationVO; message?: string }> => {
@@ -353,6 +385,9 @@ export const registrationApi = {
 };
 
 // 患者表相关 API（优先用于在患者表中检索）
+/**
+ * 患者相关 API：查找、检索与创建
+ */
 export const patientApi = {
   // 根据身份证查找患者（优先从 /patients 或 /patient/list 等接口获取）
   findByIdCard: async (idCard: string, config?: AxiosRequestConfig): Promise<Patient | Patient[] | null> => {
@@ -434,6 +469,9 @@ export const basicApi = {
   }
 };
 // --- 药房 API ---
+/**
+ * 药房相关 API：库存、待发药、发药操作等
+ */
 export const pharmacyApi = {
   // 查询库存（支持关键字/低库存筛选）
   getDrugs: async (keyword?: string, lowStock?: boolean, config?: AxiosRequestConfig): Promise<Drug[]> => {
@@ -559,6 +597,9 @@ export const pharmacyApi = {
 };
 
 // --- 病历 API ---
+/**
+ * 病历相关 API：查询与保存病历
+ */
 export const medicalRecordApi = {
   // 根据挂号单ID查询病历
   getByRegistrationId: async (regId: number): Promise<MedicalRecord | null> => {
@@ -594,6 +635,9 @@ export const medicalRecordApi = {
 };
 
 // --- 医生相关 API ---
+/**
+ * 医生相关 API：候诊、病历与医嘱操作
+ */
 export const doctorApi = {
   // 获取医生候诊列表，showAll=true 返回科室全部候诊
   getWaitingList: async (showAll = false, config?: AxiosRequestConfig): Promise<RegistrationVO[]> => {
@@ -732,6 +776,9 @@ export const doctorApi = {
 };
 
 // 收费管理接口
+/**
+ * 收费管理 API：创建收费单、支付、退费与报表
+ */
 export const chargeApi = {
   // 获取收费列表
   getList: async (params?: { chargeNo?: string; patientId?: number; status?: number; startDate?: string; endDate?: string; page?: number; size?: number }, config?: AxiosRequestConfig): Promise<PageChargeVO | null> => {
@@ -794,7 +841,7 @@ export const chargeApi = {
   },
 
   // 日报表
-  getDailyReport: async (params?: { date: string }, config?: AxiosRequestConfig): Promise<DailySettlementVO | null> => {
+  getDailyReport: async (params?: { date?: string }, config?: AxiosRequestConfig): Promise<DailySettlementVO | null> => {
     try {
       const res = await api.get('/cashier/charges/statistics/daily', { params, ...config });
       const norm = normalizeResponse<DailySettlementVO>(res?.data);
@@ -802,6 +849,54 @@ export const chargeApi = {
     } catch (err) {
       logApiError('chargeApi.getDailyReport', err as AxiosError);
       return null;
+    }
+  },
+
+  // 为挂号单创建仅包含挂号费的收费单
+  createRegistrationCharge: async (registrationId: number, config?: AxiosRequestConfig): Promise<ChargeVO | null> => {
+    try {
+      const res = await api.post(`/cashier/charges/registration/${encodeURIComponent(String(registrationId))}`, {}, config);
+      const norm = normalizeResponse<ChargeVO>(res?.data);
+      return norm.data ?? null;
+    } catch (err) {
+      logApiError('chargeApi.createRegistrationCharge', err as AxiosError);
+      return null;
+    }
+  },
+
+  // 为挂号单创建仅包含处方费的收费单
+  createPrescriptionCharge: async (data: CreateChargeDTO, config?: AxiosRequestConfig): Promise<ChargeVO | null> => {
+    try {
+      const res = await api.post('/cashier/charges/prescription', data, config);
+      const norm = normalizeResponse<ChargeVO>(res?.data);
+      return norm.data ?? null;
+    } catch (err) {
+      logApiError('chargeApi.createPrescriptionCharge', err as AxiosError);
+      return null;
+    }
+  },
+
+  // 获取挂号单的所有收费记录（按类型分组）
+  getChargesByRegistration: async (registrationId: number, config?: AxiosRequestConfig): Promise<{ registration?: ChargeVO[]; prescription?: ChargeVO[]; combined?: ChargeVO[] } | null> => {
+    try {
+      const res = await api.get(`/cashier/charges/registration/${encodeURIComponent(String(registrationId))}/by-type`, config);
+      const norm = normalizeResponse<{ registration?: ChargeVO[]; prescription?: ChargeVO[]; combined?: ChargeVO[] }>(res?.data);
+      return norm.data ?? null;
+    } catch (err) {
+      logApiError('chargeApi.getChargesByRegistration', err as AxiosError);
+      return null;
+    }
+  },
+
+  // 检查挂号费是否已支付
+  checkRegistrationPaymentStatus: async (registrationId: number, config?: AxiosRequestConfig): Promise<boolean> => {
+    try {
+      const res = await api.get(`/cashier/charges/registration/${encodeURIComponent(String(registrationId))}/payment-status`, config);
+      const norm = normalizeResponse<boolean>(res?.data);
+      return Boolean(norm.data);
+    } catch (err) {
+      logApiError('chargeApi.checkRegistrationPaymentStatus', err as AxiosError);
+      return false;
     }
   },
 };

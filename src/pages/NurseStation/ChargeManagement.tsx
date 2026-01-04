@@ -51,10 +51,31 @@ const ChargeManagement: React.FC = () => {
     if (!selectedCharge) return;
     
     try {
-      // 交易流水号由后端生成，前端不再模拟
+      // 生成模拟交易流水号（非现金支付需要）
+      const generateTransactionNo = (paymentMethod: number): string | undefined => {
+        const timestamp = Date.now();
+        const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+        switch (paymentMethod) {
+          case 1: // 现金，不需要交易号
+            return undefined;
+          case 2: // 银行卡
+            return `BC${timestamp}${random}`;
+          case 3: // 微信
+            return `WX${timestamp}${random}`;
+          case 4: // 支付宝
+            return `ALI${timestamp}${random}`;
+          case 5: // 医保
+            return `YB${timestamp}${random}`;
+          default:
+            return `TX${timestamp}${random}`;
+        }
+      };
+
+      const transactionNo = generateTransactionNo(paymentMethod);
       const success = await chargeApi.pay(selectedCharge.id, { 
         paymentMethod, 
-        paidAmount: selectedCharge.totalAmount
+        paidAmount: selectedCharge.totalAmount,
+        transactionNo
       });
       
       if (success) {

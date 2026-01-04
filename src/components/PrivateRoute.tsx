@@ -3,30 +3,42 @@ import { Navigate, useLocation } from 'react-router-dom';
 import { useStore } from '../store/store';
 import { authApi } from '../services/api';
 
-// 验证缓存：避免短时间内重复验证
-const VALIDATION_CACHE_MS = 30000; // 30秒内不重复验证
+const VALIDATION_CACHE_MS = 20000; // 20秒内不重复验证
 let lastValidationTime = 0;
 let lastValidationResult = false;
 
+/**
+ * 私有路由守卫：验证登录与角色后渲染 children
+ * - 未登录或验证失败重定向到登录页
+ * - 验证中显示加载指示
+ */
 const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
   const token = useStore((s) => s.token);
-  const logout = useStore((s) => s.logout);
   const user = useStore(s => s.user);
-  const notify = useStore(s => s.notify);
   
-  // 若没有 token 直接视为未登录
-  const [valid, setValid] = useState<boolean | null>(token ? null : false);
+  // 根据token计算初始valid状态
+  const [valid, setValid] = useState<boolean | null>(() => token ? null : false);
   const validatingRef = useRef(false); // 防止并发验证
 
   useEffect(() => {
     let mounted = true;
+    const logout = useStore.getState().logout;
+    const notify = useStore.getState().notify;
+    
     if (!token) {
-      // 无 token，初始已为未登录，无需再次 setState
       lastValidationTime = 0;
       lastValidationResult = false;
+      validatingRef.current = false;
+      setValid(false);
       return () => { mounted = false; };
     }
+
+    // 重置验证标志，允许新的验证开始
+    validatingRef.current = false;
+    
+    // 设置为 null 触发加载状态
+    setValid(null);
 
     // 检查缓存：如果在缓存时间内且上次验证成功，直接使用缓存结果
     const now = Date.now();
@@ -69,6 +81,7 @@ const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         if (!ok) {
           logout();
           setValid(false);
+          validatingRef.current = false;
           return;
         }
 
@@ -87,17 +100,21 @@ const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           notify('无权访问该工作台，请使用对应角色账号登录', 'error');
           logout();
           setValid(false);
+          validatingRef.current = false;
           return;
         }
 
         setValid(true);
-      } finally {
         validatingRef.current = false;
+      } catch {
+        validatingRef.current = false;
+        setValid(false);
       }
     })();
 
     return () => { mounted = false; };
-  }, [token, logout, location.pathname, notify, user?.role]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, location.pathname]);
 
   // 显示加载状态而非空白
   if (valid === null) {

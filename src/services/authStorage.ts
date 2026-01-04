@@ -1,8 +1,10 @@
 // src/services/authStorage.ts
 // 集中管理本地与用户/令牌的读写，便于未来切换到更安全的存储策略
+/** 本地存储中 token 的 key 名称 */
 export const TOKEN_KEY = 'his_token';
 export const USER_KEY = 'his_user';
 
+/** 本地存储中 user 的 key 名称（JSON 序列化） */
 export function getToken(): string | null {
     try {
         return localStorage.getItem(TOKEN_KEY);
@@ -33,6 +35,10 @@ export function getUser(): unknown | null {
     }
 }
 
+/**
+ * 写入或删除本地存储中的用户信息
+ * @param user 要保存的用户对象，传 null 表示删除
+ */
 export function setUser(user: unknown | null): void {
     try {
         if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
@@ -42,6 +48,9 @@ export function setUser(user: unknown | null): void {
     }
 }
 
+/**
+ * 删除本地存储中的用户信息
+ */
 export function removeUser(): void {
     setUser(null);
 }
