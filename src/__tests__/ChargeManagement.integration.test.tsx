@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChargeManagement from '../pages/NurseStation/ChargeManagement';
 import { vi } from 'vitest';
@@ -40,9 +40,11 @@ describe('ChargeManagement 页面集成测试 - 缴费流程', () => {
       expect(alertSpy).toHaveBeenCalledWith('缴费成功');
     });
 
-    // 列表中的状态更新为已缴费
+    // 列表中的状态更新为已缴费（在对应收费单项内）
+    const card = screen.getByText('张三').closest('div');
+    expect(card).not.toBeNull();
     await waitFor(() => {
-      expect(screen.getByText('已缴费')).toBeInTheDocument();
+      expect(within(card as Element).getByText('已缴费')).toBeInTheDocument();
     });
 
     alertSpy.mockRestore();
