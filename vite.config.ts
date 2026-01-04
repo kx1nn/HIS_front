@@ -19,6 +19,11 @@ export default defineConfig(({ mode }) => {
           rewrite: (path) => path
         }
       }
+    },
+    test: {
+      globals: true,
+      environment: 'jsdom',
+      setupFiles: './test/setup.ts'
     }
   };
 });
