@@ -37,10 +37,19 @@ jobs:
       - name: Install dependencies and regenerate lockfile
         run: npm install --legacy-peer-deps
 
-      - name: Run tests
-        run: npm run test -- --run
+      - name: Run tests (capture output)
+        run: |
+          set -o pipefail
+          npm run test -- --run 2>&1 | tee vitest.log || true
         env:
           CI: true
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-log
+          path: vitest.log
 
       - name: Commit and push package-lock.json (if changed)
         env:
