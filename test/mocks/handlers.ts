@@ -20,10 +20,7 @@ let charges = [
 const handlers: RequestHandler[] = [
     // GET 列表
     http.get('/api/cashier/charges', (req) => {
-        return {
-            status: 200,
-            body: { code: 0, data: { content: charges, total: charges.length } }
-        };
+        return new Response(JSON.stringify({ code: 0, data: { content: charges, total: charges.length } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }),
 
     // POST 支付
@@ -32,7 +29,7 @@ const handlers: RequestHandler[] = [
         const nid = Number(id);
         const idx = charges.findIndex(c => c.id === nid);
         if (idx === -1) {
-            return { status: 404, body: { code: 404, message: '未找到收费单' } };
+            return new Response(JSON.stringify({ code: 404, message: '未找到收费单' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
 
         // 简单模拟：将状态改为已缴费
@@ -42,7 +39,7 @@ const handlers: RequestHandler[] = [
             statusDesc: '已缴费'
         };
 
-        return { status: 200, body: { code: 0, data: charges[idx] } };
+        return new Response(JSON.stringify({ code: 0, data: charges[idx] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }),
 
     // POST 退费
@@ -51,7 +48,7 @@ const handlers: RequestHandler[] = [
         const nid = Number(id);
         const idx = charges.findIndex(c => c.id === nid);
         if (idx === -1) {
-            return { status: 404, body: { code: 404, message: '未找到收费单' } };
+            return new Response(JSON.stringify({ code: 404, message: '未找到收费单' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
 
         charges[idx] = {
@@ -60,7 +57,7 @@ const handlers: RequestHandler[] = [
             statusDesc: '已退费'
         };
 
-        return { status: 200, body: { code: 0, data: charges[idx] } };
+        return new Response(JSON.stringify({ code: 0, data: charges[idx] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     })
 ];
 
