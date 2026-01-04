@@ -1,0 +1,81 @@
+import { rest } from 'msw';
+import type { RestHandler } from 'msw';
+
+// 简单的内存存储，模拟后端收费单数据
+let charges = [
+    {
+        id: 1,
+        chargeNo: 'C001',
+        patientName: '张三',
+        totalAmount: 100,
+        status: 0,
+        statusDesc: '待缴费',
+        createdAt: '2025-01-01 12:00:00',
+        details: [
+            { itemName: '检查费', itemType: '项目', itemAmount: 100 }
+        ]
+    }
+];
+
+const handlers: RestHandler[] = [
+    // GET 列表
+    rest.get('/cashier/charges', (req, res, ctx) => {
+        return res(ctx.status(200), ctx.json({ code: 0, data: { content: charges, total: charges.length } }));
+    }),
+
+    // POST 支付
+    rest.post('/cashier/charges/:id/pay', async (req, res, ctx) => {
+        const { id } = req.params;
+        const nid = Number(id);
+        const idx = charges.findIndex(c => c.id === nid);
+        if (idx === -1) {
+            return res(ctx.status(404), ctx.json({ code: 404, message: '未找到收费单' }));
+        }
+
+        // 简单模拟：将状态改为已缴费
+        charges[idx] = {
+            ...charges[idx],
+            status: 1,
+            statusDesc: '已缴费'
+        };
+
+        return res(ctx.status(200), ctx.json({ code: 0, data: charges[idx] }));
+    }),
+
+    // POST 退费
+    rest.post('/cashier/charges/:id/refund', async (req, res, ctx) => {
+        const { id } = req.params;
+        const nid = Number(id);
+        const idx = charges.findIndex(c => c.id === nid);
+        if (idx === -1) {
+            return res(ctx.status(404), ctx.json({ code: 404, message: '未找到收费单' }));
+        }
+
+        charges[idx] = {
+            ...charges[idx],
+            status: 2,
+            statusDesc: '已退费'
+        };
+
+        return res(ctx.status(200), ctx.json({ code: 0, data: charges[idx] }));
+    })
+];
+
+export { handlers };
+export function __resetMockData() {
+    // 重新初始化，方便测试之间复用
+    charges = [
+        {
+            id: 1,
+            chargeNo: 'C001',
+            patientName: '张三',
+            totalAmount: 100,
+            status: 0,
+            statusDesc: '待缴费',
+            createdAt: '2025-01-01 12:00:00',
+            details: [
+                { itemName: '检查费', itemType: '项目', itemAmount: 100 }
+            ]
+        }
+    ];
+}
