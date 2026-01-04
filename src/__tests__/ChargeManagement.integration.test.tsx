@@ -1,4 +1,4 @@
-import React from 'react';
+/// <reference types="vitest" />
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChargeManagement from '../pages/NurseStation/ChargeManagement';
@@ -41,10 +41,10 @@ describe('ChargeManagement 页面集成测试 - 缴费流程', () => {
     });
 
     // 列表中的状态更新为已缴费（在对应收费单项内）
-    const card = screen.getByText('张三').closest('div');
+    const card = screen.getByText('张三').closest('div') as HTMLElement | null;
     expect(card).not.toBeNull();
     await waitFor(() => {
-      expect(within(card as Element).getByText('已缴费')).toBeInTheDocument();
+      expect(within(card as HTMLElement).getByText('已缴费')).toBeInTheDocument();
     });
 
     alertSpy.mockRestore();

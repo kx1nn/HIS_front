@@ -19,7 +19,7 @@ let charges = [
 
 const handlers: RequestHandler[] = [
     // GET 列表
-    http.get('/api/cashier/charges', (req) => {
+    http.get('/api/cashier/charges', () => {
         return new Response(JSON.stringify({ code: 0, data: { content: charges, total: charges.length } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }),
 

@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import React from 'react';
+/// <reference types="vitest" />
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -7,13 +7,14 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 // mock authApi.validate and useStore
 import * as api from '../services/api';
 
-// mock store with mutable state and helper
-let _mockState: any = { token: null, user: null, notify: vi.fn(), logout: vi.fn() };
+// mock store with typed mutable state and helper
+type MockState = { token: string | null; user: { role?: string } | null; notify: ReturnType<typeof vi.fn>; logout: ReturnType<typeof vi.fn> };
+let _mockState: MockState = { token: null, user: null, notify: vi.fn(), logout: vi.fn() };
 vi.mock('../store/store', () => {
-  const useStore = (selector: (s: any) => any) => selector(_mockState);
-  // attach getState to mimic Zustand API
-  (useStore as any).getState = () => _mockState;
-  (useStore as any).__setMockState = (s: any) => { _mockState = s; };
+  // typed useStore that mimics Zustand selector behavior and exposes getState/__setMockState
+  const useStore = ((selector: (s: MockState) => unknown) => selector(_mockState)) as unknown as (<T>(selector: (s: MockState) => T) => T) & { getState: () => MockState; __setMockState?: (s: MockState) => void };
+  useStore.getState = () => _mockState;
+  useStore.__setMockState = (s: MockState) => { _mockState = s; };
   return { useStore };
 });
 
@@ -24,8 +25,9 @@ import PrivateRoute from '../components/PrivateRoute';
 describe('PrivateRoute', () => {
   beforeEach(() => {
     _mockState = { token: null, user: null, notify: vi.fn(), logout: vi.fn() };
-    (api.authApi.validate as unknown as any) = undefined;
-    vi.resetAllMocks();
+    // ensure no lingering mock implementation
+    delete (api.authApi as unknown as Record<string, unknown>).validate;
+    vi.restoreAllMocks();
   });
 
   afterEach(() => { cleanup(); });
@@ -48,7 +50,7 @@ describe('PrivateRoute', () => {
   test('renders children when token valid and role matches path', async () => {
     _mockState.token = 't';
     _mockState.user = { role: 'nurse' };
-    (api.authApi.validate as unknown as any) = vi.fn().mockResolvedValue(true);
+    vi.spyOn(api.authApi, 'validate').mockResolvedValue(true);
 
     render(
       <MemoryRouter initialEntries={["/nurse"]}>
@@ -64,7 +66,7 @@ describe('PrivateRoute', () => {
 
   test('redirects when validate fails', async () => {
     _mockState.token = 't';
-    (api.authApi.validate as unknown as any) = vi.fn().mockResolvedValue(false);
+    vi.spyOn(api.authApi, 'validate').mockResolvedValue(false);
 
     render(
       <MemoryRouter initialEntries={["/nurse"]}>
@@ -81,7 +83,7 @@ describe('PrivateRoute', () => {
   test('notifies and logs out when role mismatch', async () => {
     _mockState.token = 't';
     _mockState.user = { role: 'doctor' };
-    (api.authApi.validate as unknown as any) = vi.fn().mockResolvedValue(true);
+    vi.spyOn(api.authApi, 'validate').mockResolvedValue(true);
 
     render(
       <MemoryRouter initialEntries={["/nurse"]}>
