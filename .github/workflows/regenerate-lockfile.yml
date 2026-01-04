@@ -1,0 +1,86 @@
+name: Regenerate package-lock
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  regenerate:
+    name: Regenerate lockfile on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Use Node 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Show node/npm
+        run: |
+          node -v
+          npm -v
+
+      - name: Attempt clean install (allow failures)
+        run: npm ci --legacy-peer-deps || true
+
+      - name: Remove lockfile & node_modules
+        run: |
+          rm -rf node_modules package-lock.json
+          ls -la || true
+
+      - name: Install dependencies and regenerate lockfile
+        run: npm install --legacy-peer-deps
+
+      - name: Run tests (capture output)
+        run: |
+          set -o pipefail
+          npm run test -- --run 2>&1 | tee vitest.log || true
+        env:
+          CI: true
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-log
+          path: vitest.log
+
+      - name: Commit and push package-lock.json (if changed)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if git diff --cached --quiet; then
+            echo "No changes to package-lock.json"
+          else
+            git commit -m "chore: regenerate package-lock.json on ubuntu to fix CI" || true
+            git push origin HEAD:${{ github.head_ref }}
+          fi
+
+      - name: Notify push skipped (forked PR or insufficient permissions)
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          echo "Push skipped: PR is from a fork or external repository; workflow cannot push changes back."
+
+      - name: Upload npm logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-logs
+          path: |
+            npm-debug.log || true
+            .npm/_logs || true

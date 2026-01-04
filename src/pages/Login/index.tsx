@@ -6,6 +6,10 @@ import { useStore, type AppState } from '../../store/store';
 import { authApi } from '../../services/api';
 import type { User as UserType } from '../../types';
 
+/**
+ * 登录页面组件
+ * 负责：用户认证、错误提示与跳转到对应工作台
+ */
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();

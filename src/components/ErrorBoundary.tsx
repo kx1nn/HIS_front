@@ -6,6 +6,9 @@ interface State {
   info: React.ErrorInfo | null;
 }
 
+/**
+ * 全局错误边界组件，用于捕获渲染时的异常并展示友好界面
+ */
 class ErrorBoundary extends React.Component<React.PropsWithChildren<unknown>, State> {
   constructor(props: React.PropsWithChildren<unknown>) {
     super(props);

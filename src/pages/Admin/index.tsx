@@ -5,6 +5,10 @@ import { useStore } from '../../store/store';
 import { registrationApi, chargeApi, basicApi } from '../../services/api';
 import { getRecentLogs, clearLogs, type LogEntry } from '../../services/logger';
 
+/**
+ * 管理后台页面组件（管理员视角）
+ * 功能：统计、日志查看与系统配置入口
+ */
 const AdminPage: React.FC = () => {
   const { user, logout } = useStore();
   const navigate = useNavigate();

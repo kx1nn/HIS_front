@@ -1,6 +1,10 @@
 import React from 'react';
 import { useStore } from '../store/store';
 
+/**
+ * 全局 Toast 通知容器组件
+ * 从全局 store 中读取通知并渲染，可手动关闭
+ */
 const ToastContainer: React.FC = () => {
   const notifications = useStore((s) => s.notifications);
   const removeNotification = useStore((s) => s.removeNotification);

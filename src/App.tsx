@@ -12,6 +12,9 @@ import ErrorBoundary from './components/ErrorBoundary';
 // 使用独立组件 `src/components/PrivateRoute.tsx` 提供路由守卫（包含 token 验证）
 
 // --- App 根组件 ---
+/**
+ * 根组件：路由配置与全局组件挂载（ErrorBoundary / Toast）
+ */
 function App() {
   return (
     <ErrorBoundary>
