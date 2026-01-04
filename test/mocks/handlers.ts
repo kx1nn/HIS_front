@@ -1,5 +1,5 @@
-import { rest } from 'msw';
-import type { RestHandler } from 'msw';
+import { http } from 'msw';
+import type { RequestHandler } from 'msw';
 
 // 简单的内存存储，模拟后端收费单数据
 let charges = [
@@ -17,14 +17,14 @@ let charges = [
     }
 ];
 
-const handlers: RestHandler[] = [
+const handlers: RequestHandler[] = [
     // GET 列表
-    rest.get('/cashier/charges', (req, res, ctx) => {
+    http.get('/cashier/charges', (req, res, ctx) => {
         return res(ctx.status(200), ctx.json({ code: 0, data: { content: charges, total: charges.length } }));
     }),
 
     // POST 支付
-    rest.post('/cashier/charges/:id/pay', async (req, res, ctx) => {
+    http.post('/cashier/charges/:id/pay', async (req, res, ctx) => {
         const { id } = req.params;
         const nid = Number(id);
         const idx = charges.findIndex(c => c.id === nid);
@@ -43,7 +43,7 @@ const handlers: RestHandler[] = [
     }),
 
     // POST 退费
-    rest.post('/cashier/charges/:id/refund', async (req, res, ctx) => {
+    http.post('/cashier/charges/:id/refund', async (req, res, ctx) => {
         const { id } = req.params;
         const nid = Number(id);
         const idx = charges.findIndex(c => c.id === nid);
