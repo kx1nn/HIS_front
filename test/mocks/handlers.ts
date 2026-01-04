@@ -19,12 +19,12 @@ let charges = [
 
 const handlers: RequestHandler[] = [
     // GET 列表
-    http.get('/cashier/charges', (req, res, ctx) => {
+    http.get('/api/cashier/charges', (req, res, ctx) => {
         return res(ctx.status(200), ctx.json({ code: 0, data: { content: charges, total: charges.length } }));
     }),
 
     // POST 支付
-    http.post('/cashier/charges/:id/pay', async (req, res, ctx) => {
+    http.post('/api/cashier/charges/:id/pay', async (req, res, ctx) => {
         const { id } = req.params;
         const nid = Number(id);
         const idx = charges.findIndex(c => c.id === nid);
@@ -43,7 +43,7 @@ const handlers: RequestHandler[] = [
     }),
 
     // POST 退费
-    http.post('/cashier/charges/:id/refund', async (req, res, ctx) => {
+    http.post('/api/cashier/charges/:id/refund', async (req, res, ctx) => {
         const { id } = req.params;
         const nid = Number(id);
         const idx = charges.findIndex(c => c.id === nid);
