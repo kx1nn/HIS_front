@@ -1,5 +1,9 @@
 name: Regenerate package-lock
 
+permissions:
+  contents: write
+  pull-requests: write
+
 on:
   workflow_dispatch:
   pull_request:
@@ -13,6 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.head_ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
@@ -52,6 +57,7 @@ jobs:
           path: vitest.log
 
       - name: Commit and push package-lock.json (if changed)
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -64,6 +70,11 @@ jobs:
             git commit -m "chore: regenerate package-lock.json on ubuntu to fix CI" || true
             git push origin HEAD:${{ github.head_ref }}
           fi
+
+      - name: Notify push skipped (forked PR or insufficient permissions)
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          echo "Push skipped: PR is from a fork or external repository; workflow cannot push changes back."
 
       - name: Upload npm logs
         if: failure()
