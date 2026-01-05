@@ -6,9 +6,10 @@ import {
   Trash2, Send, Activity, Stethoscope, LogOut
 } from 'lucide-react';
 import { useStore } from '../../store/store';
-import { registrationApi, isCanceledError, pharmacyApi, doctorApi, chargeApi } from '../../services/api';
+import { api, registrationApi, isCanceledError, pharmacyApi, doctorApi, chargeApi } from '../../services/api';
 import * as logger from '../../services/logger';
-import type { RegistrationVO, MedicalRecordVO, MedicineVO, PatientDetailVO, MedicalRecordDTO, PrescriptionVO } from '../../types';
+import type { RegistrationVO, MedicalRecordVO, MedicineVO, PatientDetailVO, MedicalRecordDTO } from '../../types';
+import { RegistrationStatus } from '../../types';
 
 // 处方项类型
 interface PrescriptionItem {
@@ -204,11 +205,12 @@ const DoctorStation: React.FC = () => {
     }
   };
 
+
   // 1. 叫号/接诊
   const handleCallPatient = (patient: RegistrationVO) => {
     setActivePatientId(patient.id);
     // 更新状态为"诊中"
-    setPatients(prev => prev.map(p => p.id === patient.id ? { ...p, status: 1, statusDesc: '诊中' } : p));
+    setPatients(prev => prev.map(p => p.id === patient.id ? { ...p, status: RegistrationStatus.IN_CONSULTATION, statusDesc: '诊中' } : p));
     notify(`正在呼叫 ${patient.sequence}号 ${patient.patientName} 到诊室...`, 'info');
   };
 
@@ -231,12 +233,14 @@ const DoctorStation: React.FC = () => {
         p.drugId === drug.mainId ? { ...p, count: p.count + 1 } : p
       ));
     } else {
+      // 将零售价格字符串转换为数值以便做计算
+      const priceNum = parseFloat(drug.retailPrice || '0') || 0;
       setPrescriptions(prev => [...prev, {
         id: Date.now(),
         drugId: drug.mainId,
         name: drug.name,
         spec: drug.specification || '',
-        price: drug.retailPrice,
+        price: priceNum,
         count: 1,
         usage: '每日3次, 每次1粒' // 默认用法
       }]);
@@ -291,38 +295,47 @@ const DoctorStation: React.FC = () => {
         await doctorApi.submitMedicalRecord(savedRecord.mainId);
       }
 
-      // 2. 发送处方
+      // 2. 发送处方（使用医生专用创建接口：POST /api/doctor/prescriptions/create）
       if (prescriptions.length > 0) {
-        const rx: PrescriptionVO = {
-          id: 0,
-          patientName: activePatient.patientName,
-          gender: activePatient.gender,
-          age: activePatient.age,
-          regNo: activePatient.regNo,
-          totalAmount: prescriptions.reduce((sum, item) => sum + (item.price * item.count), 0),
+        // 构建 PrescriptionDTO，注意：绝对不要传 doctorId，后端从 Token 中解析当前医生
+        const dto = {
+          registrationId: activePatient.id,
+          prescriptionType: 1, // 默认为西药
+          validityDays: 3,
           items: prescriptions.map(p => ({
-            drugName: p.name,
-            spec: p.spec,
-            count: p.count,
-            usage: p.usage,
-            medicineId: p.drugId
+            medicineId: p.drugId,
+            quantity: p.count,
+            frequency: p.usage, // 使用字段复用为频率/说明
+            instructions: p.usage
           }))
         };
-        const sentRx = await pharmacyApi.sendPrescription(rx);
-        if (sentRx) {
-          // 3. 生成收费单 (如果有处方)
-          await chargeApi.create({
-            registrationId: activePatient.id,
-            prescriptionIds: [sentRx.id]
-          });
+
+        try {
+          // 明确在 header 中带上 Authorization（从 localStorage 读取）以满足安全要求
+          const token = localStorage.getItem('his_token') ?? '';
+          const res = await api.post('/doctor/prescriptions/create', dto, { headers: { Authorization: `Bearer ${token}` } });
+          // 兼容后端响应包装 {code, message, data}
+          const sent = (res?.data && (res.data.data ?? res.data)) as unknown;
+          const maybe = sent as { mainId?: number; id?: number } | null;
+          const prescId = maybe?.mainId ?? maybe?.id;
+          if (prescId && prescId > 0) {
+            // 3. 生成处方收费单（仅处方费）
+            await chargeApi.createPrescriptionCharge({ registrationId: activePatient.id, prescriptionIds: [prescId] });
+            notify('处方已创建并发送至药房', 'success');
+          } else {
+            notify('处方创建失败：后端未返回处方ID', 'error');
+          }
+        } catch (e) {
+          logger.error('DoctorStation.createPrescription', e);
+          notify('处方创建失败，请重试', 'error');
         }
       } else {
         // 如果没有处方，也可能需要生成一个纯诊疗费的收费单（视业务需求而定）
         // 目前仅在有处方时生成
       }
 
-      // 4. 更新挂号状态
-      await doctorApi.updateRegistrationStatus(activePatient.id, 1);
+      // 4. 更新挂号状态（完成）
+      await doctorApi.updateRegistrationStatus(activePatient.id, RegistrationStatus.COMPLETED);
 
       setPatients(prev => prev.filter(p => p.id !== activePatientId));
       setActivePatientId(null);
@@ -398,13 +411,13 @@ const DoctorStation: React.FC = () => {
                     <span className="text-lg mr-1 font-mono">{p.queueNo || p.sequence}</span>{p.queueNo ? '' : '号'} {p.patientName}
                   </span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                    p.status === 1 ? 'bg-green-50 text-green-600 border-green-200' : 'bg-yellow-50 text-yellow-600 border-yellow-200'
+                    p.status === RegistrationStatus.IN_CONSULTATION ? 'bg-green-50 text-green-600 border-green-200' : 'bg-yellow-50 text-yellow-600 border-yellow-200'
                   }`}>
-                    {p.status === 1 ? '诊中' : '候诊'}
+                    {p.status === RegistrationStatus.IN_CONSULTATION ? '诊中' : '候诊'}
                   </span>
                 </div>
                 <div className="text-xs text-slate-500 flex justify-between items-center">
-                  <span>{p.gender === 1 ? '男' : '女'} | {p.age}岁</span>
+                  <span>{p.genderDesc || '—'} | {p.age}岁</span>
                   <span className="font-mono text-slate-400">{(p.createTime || '').slice(0,5)}</span>
                 </div>
                 
@@ -438,7 +451,7 @@ const DoctorStation: React.FC = () => {
                     </span>
                   </div>
                   <div className="text-xs text-slate-500 mt-0.5 flex gap-2">
-                    <span>{activePatient.gender === 1 ? '男' : '女'}</span>
+                    <span>{activePatient.genderDesc || '—'}</span>
                     <span className="w-px h-3 bg-slate-300"></span>
                     <span>{activePatient.age}岁</span>
                     <span className="w-px h-3 bg-slate-300"></span>

@@ -4,14 +4,13 @@ import LoginPage from './pages/Login';
 import NurseStation from './pages/NurseStation';
 import DoctorStation from './pages/DoctorStation';
 import PharmacyStation from './pages/PharmacyStation';
+import Cashier from './pages/Cashier';
 import AdminPage from './pages/Admin';
 import PrivateRoute from './components/PrivateRoute';
 import ToastContainer from './components/ToastContainer';
 import ErrorBoundary from './components/ErrorBoundary';
 
 // 使用独立组件 `src/components/PrivateRoute.tsx` 提供路由守卫（包含 token 验证）
-
-// --- App 根组件 ---
 /**
  * 根组件：路由配置与全局组件挂载（ErrorBoundary / Toast）
  */
@@ -41,6 +40,13 @@ function App() {
           <Route path="/pharmacy" element={
             <PrivateRoute>
               <PharmacyStation />
+            </PrivateRoute>
+          } />
+
+          {/* 收费站 */}
+          <Route path="/cashier" element={
+            <PrivateRoute>
+              <Cashier />
             </PrivateRoute>
           } />
 

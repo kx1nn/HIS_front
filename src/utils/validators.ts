@@ -139,10 +139,13 @@ export function validateAge(age: number | string): { valid: boolean; message?: s
 /**
  * 从身份证号提取信息
  * @param id 身份证号码（18位）
- * @returns 返回提取的信息对象或 null，格式：{ gender: 1|0, birthDate: 'YYYY-MM-DD', age: number }
+ * @returns 返回提取的信息对象或 null，格式：{ gender: 0|1, birthDate: 'YYYY-MM-DD', age: number }，其中 0=男,1=女
  */
+export const GENDER = { Male: 0 as const, Female: 1 as const };
+export type Gender = typeof GENDER[keyof typeof GENDER];
+
 export function parseIdCard(id: string): {
-    gender: number; // 1: 男, 0: 女
+    gender: Gender; // 0=男, 1=女
     birthDate: string; // YYYY-MM-DD
     age: number;
 } | null {
@@ -168,9 +171,9 @@ export function parseIdCard(id: string): {
         age--;
     }
 
-    // 提取性别（第17位，奇数为男，偶数为女）
+    // 提取性别（第17位：奇数为男(0)，偶数为女(1)）
     const genderCode = parseInt(trimmed[16], 10);
-    const gender = genderCode % 2 === 1 ? 1 : 0;
+    const gender = genderCode % 2 === 1 ? GENDER.Male : GENDER.Female;
 
     return { gender, birthDate, age };
 }

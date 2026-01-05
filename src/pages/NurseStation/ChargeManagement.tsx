@@ -1,7 +1,68 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Search, CreditCard, FileText, CheckCircle, XCircle } from 'lucide-react';
 import { chargeApi, logApiError } from '../../services/api';
-import type { ChargeVO } from '../../types';
+import type { ChargeVO, ChargeDetailVO, RegistrationStatusValue } from '../../types';
+import { RegistrationStatus } from '../../types';
+
+// helper: format currency from string or number
+const formatCurrency = (v?: string | number | null) => {
+  if (v === null || v === undefined) return '--';
+  const n = typeof v === 'string' ? parseFloat(v) : Number(v);
+  if (!isFinite(n)) return '--';
+  return n.toFixed(2);
+};
+
+const registrationStatusLabels: Record<RegistrationStatusValue, string> = {
+  [RegistrationStatus.WAITING]: '待就诊',
+  [RegistrationStatus.COMPLETED]: '已就诊',
+  [RegistrationStatus.CANCELLED]: '已取消',
+  [RegistrationStatus.REFUNDED]: '已退费',
+  [RegistrationStatus.PAID_REGISTRATION]: '已缴挂号费',
+  [RegistrationStatus.IN_CONSULTATION]: '就诊中'
+};
+
+const registrationStatusBadgeClasses: Record<RegistrationStatusValue, string> = {
+  [RegistrationStatus.WAITING]: 'bg-orange-50 text-orange-600 border-orange-100',
+  [RegistrationStatus.PAID_REGISTRATION]: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+  [RegistrationStatus.IN_CONSULTATION]: 'bg-sky-50 text-sky-700 border-sky-100',
+  [RegistrationStatus.COMPLETED]: 'bg-slate-50 text-slate-600 border-slate-100',
+  [RegistrationStatus.CANCELLED]: 'bg-slate-50 text-slate-500 border-slate-100',
+  [RegistrationStatus.REFUNDED]: 'bg-red-50 text-red-600 border-red-100'
+};
+
+const statusFilterOptions: Array<{ label: string; value: RegistrationStatusValue | 'all' }> = [
+  { label: '全部阶段', value: 'all' },
+  { label: registrationStatusLabels[RegistrationStatus.WAITING], value: RegistrationStatus.WAITING },
+  { label: registrationStatusLabels[RegistrationStatus.PAID_REGISTRATION], value: RegistrationStatus.PAID_REGISTRATION },
+  { label: registrationStatusLabels[RegistrationStatus.IN_CONSULTATION], value: RegistrationStatus.IN_CONSULTATION },
+  { label: registrationStatusLabels[RegistrationStatus.COMPLETED], value: RegistrationStatus.COMPLETED },
+  { label: registrationStatusLabels[RegistrationStatus.CANCELLED], value: RegistrationStatus.CANCELLED },
+  { label: registrationStatusLabels[RegistrationStatus.REFUNDED], value: RegistrationStatus.REFUNDED }
+];
+
+const itemTypeLabelMap: Record<string, string> = {
+  REGISTRATION: '挂号费',
+  PRESCRIPTION: '处方费',
+  COMBINED: '混合收费'
+};
+
+const deriveChargePhase = (items: Array<ChargeDetailVO | { itemType?: string; type?: string }> = []) => {
+  const normalized = items.map(item => ((item.itemType || item.type) ?? '').toString().toUpperCase());
+  const hasRegistration = normalized.some(type => type.includes('REGISTRATION'));
+  const hasPrescription = normalized.some(type => type.includes('PRESCRIPTION'));
+  if (hasRegistration && hasPrescription) return '混合阶段';
+  if (hasRegistration) return '挂号阶段';
+  if (hasPrescription) return '处方阶段';
+  return '未知阶段';
+};
+
+const getItemTypeLabel = (item: ChargeDetailVO | { itemType?: string; type?: string }) => {
+  const rawType = ((item.itemType || item.type) ?? '').toString().toUpperCase();
+  if (rawType) {
+    return itemTypeLabelMap[rawType] ?? (item.itemType || item.type || rawType);
+  }
+  return '其他';
+};
 
 /**
  * 护士收费管理页面组件
@@ -10,21 +71,29 @@ import type { ChargeVO } from '../../types';
 const ChargeManagement: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [charges, setCharges] = useState<ChargeVO[]>([]);
-  const [statusFilter, setStatusFilter] = useState<number | 'all'>('all'); // 0: Unpaid, 1: Paid, 2: Refunded
+  const [statusFilter, setStatusFilter] = useState<RegistrationStatusValue | 'all'>('all');
   const [keyword, setKeyword] = useState('');
   const [selectedCharge, setSelectedCharge] = useState<ChargeVO | null>(null);
 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState(1); // 1: Cash, 3: WeChat, 4: Alipay
+  
+  const selectedChargeDetails = selectedCharge ? (selectedCharge.details || selectedCharge.items || []) : [];
+  const selectedPhaseLabel = deriveChargePhase(selectedChargeDetails);
+  const selectedStatusValue = selectedCharge ? (selectedCharge.status as RegistrationStatusValue) : undefined;
+  const selectedStatusLabel = selectedCharge ? (selectedCharge.statusDesc || registrationStatusLabels[selectedStatusValue ?? RegistrationStatus.WAITING] || '未知状态') : '';
+  const canShowPayButton = selectedCharge?.status === RegistrationStatus.WAITING;
+  const canShowRefundButton = selectedCharge ? (
+    selectedCharge.status === (RegistrationStatus.PAID_REGISTRATION as number) ||
+    selectedCharge.status === (RegistrationStatus.IN_CONSULTATION as number) ||
+    selectedCharge.status === (RegistrationStatus.COMPLETED as number)
+  ) : false;
 
   const loadCharges = useCallback(async () => {
     setLoading(true);
     try {
       const params: Record<string, unknown> = {};
       if (statusFilter !== 'all') params.status = statusFilter;
-      // 简单的关键字搜索，假设后端支持 chargeNo 或 patientName 搜索，或者这里只传 keyword 让后端处理
-      // 根据文档，参数是 chargeNo, patientId, status, startDate, endDate
-      // 这里我们假设 keyword 是 chargeNo
       if (keyword) params.chargeNo = keyword;
       
       const pageData = await chargeApi.getList(params);
@@ -55,38 +124,26 @@ const ChargeManagement: React.FC = () => {
     if (!selectedCharge) return;
     
     try {
-      // 生成模拟交易流水号（非现金支付需要）
-      const generateTransactionNo = (paymentMethod: number): string | undefined => {
+      const generateTransactionNo = (method: number): string | undefined => {
+        if (method === 1) return undefined; // 现金不需要流水号
         const timestamp = Date.now();
         const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-        switch (paymentMethod) {
-          case 1: // 现金，不需要交易号
-            return undefined;
-          case 2: // 银行卡
-            return `BC${timestamp}${random}`;
-          case 3: // 微信
-            return `WX${timestamp}${random}`;
-          case 4: // 支付宝
-            return `ALI${timestamp}${random}`;
-          case 5: // 医保
-            return `YB${timestamp}${random}`;
-          default:
-            return `TX${timestamp}${random}`;
-        }
+        const prefix = { 2: 'BC', 3: 'WX', 4: 'ALI', 5: 'YB' }[method] || 'TX';
+        return `${prefix}${timestamp}${random}`;
       };
 
       const transactionNo = generateTransactionNo(paymentMethod);
-      const success = await chargeApi.pay(selectedCharge.id, { 
-        paymentMethod, 
+      const paidCharge = await chargeApi.pay(selectedCharge.id, {
+        paymentMethod,
         paidAmount: selectedCharge.totalAmount,
         transactionNo
       });
-      
-      if (success) {
+
+      if (paidCharge) {
         alert('缴费成功');
         setShowPaymentModal(false);
+        setSelectedCharge(paidCharge);
         loadCharges();
-        setSelectedCharge(null);
       } else {
         alert('缴费失败');
       }
@@ -99,11 +156,11 @@ const ChargeManagement: React.FC = () => {
     const reason = prompt('请输入退费原因：');
     if (!reason) return;
     try {
-      const success = await chargeApi.refund(id, { refundReason: reason });
-      if (success) {
+      const refundedCharge = await chargeApi.refund(id, { refundReason: reason });
+      if (refundedCharge) {
         alert('退费成功');
+        setSelectedCharge(refundedCharge);
         loadCharges();
-        setSelectedCharge(null);
       } else {
         alert('退费失败');
       }
@@ -131,18 +188,13 @@ const ChargeManagement: React.FC = () => {
               onKeyDown={e => e.key === 'Enter' && loadCharges()}
             />
           </div>
-          <div className="flex gap-2">
-            {[
-              { label: '全部', val: 'all' },
-              { label: '待缴费', val: 0 },
-              { label: '已缴费', val: 1 },
-              { label: '已退费', val: 2 }
-            ].map(opt => (
+          <div className="flex flex-wrap gap-2">
+            {statusFilterOptions.map(opt => (
               <button
                 key={opt.label}
-                onClick={() => setStatusFilter(opt.val as number | 'all')}
+                onClick={() => setStatusFilter(opt.value)}
                 className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-                  statusFilter === opt.val 
+                  statusFilter === opt.value 
                     ? 'bg-blue-50 border-blue-200 text-blue-600 font-bold' 
                     : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}
@@ -151,6 +203,9 @@ const ChargeManagement: React.FC = () => {
               </button>
             ))}
           </div>
+          <p className="text-xs text-slate-400">
+            当前收费状态遵循分阶段收费流程（待就诊 → 已缴挂号费 → 就诊中 → 已就诊），按阶段筛选可快速定位待处理记录。
+          </p>
         </div>
         
         <div className="flex-1 overflow-y-auto">
@@ -167,17 +222,20 @@ const ChargeManagement: React.FC = () => {
               >
                 <div className="flex justify-between items-start mb-1">
                   <span className="font-bold text-slate-700">{c.patientName}</span>
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${
-                    c.status === 1 ? 'bg-green-100 text-green-700' : 
-                    c.status === 2 ? 'bg-slate-100 text-slate-500' : 
-                    'bg-orange-100 text-orange-700'
-                  }`}>
-                    {c.statusDesc}
-                  </span>
+                  {(() => {
+                    const statusKey = c.status as RegistrationStatusValue;
+                    const badgeClasses = registrationStatusBadgeClasses[statusKey] ?? 'bg-slate-100 text-slate-500 border-slate-200';
+                    const label = c.statusDesc || registrationStatusLabels[statusKey] || '未知状态';
+                    return (
+                      <span className={`text-xs px-1.5 py-0.5 rounded border ${badgeClasses}`}>
+                        {label}
+                      </span>
+                    );
+                  })()}
                 </div>
                 <div className="flex justify-between text-xs text-slate-500">
                   <span className="font-mono">{c.chargeNo}</span>
-                  <span className="font-bold text-slate-700">¥{c.totalAmount.toFixed(2)}</span>
+                  <span className="font-bold text-slate-700">¥{formatCurrency(c.totalAmount)}</span>
                 </div>
                 <div className="text-[10px] text-slate-400 mt-1">{c.createdAt || c.createTime}</div>
               </div>
@@ -194,9 +252,14 @@ const ChargeManagement: React.FC = () => {
               <div>
                 <h3 className="text-lg font-bold text-slate-800">收费单详情</h3>
                 <p className="text-sm text-slate-500 mt-1">单号：{selectedCharge.chargeNo}</p>
+                <div className="flex flex-wrap gap-2 text-xs text-slate-500 mt-2">
+                  <span className="px-2 py-0.5 border rounded-full bg-white border-slate-200">{selectedPhaseLabel}</span>
+                  <span className="px-2 py-0.5 border rounded-full bg-white border-slate-200">{selectedStatusLabel}</span>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">收费阶段自动联动分阶段收费流程：挂号费 → 处方费。</p>
               </div>
               <div className="text-right">
-                <div className="text-2xl font-bold text-blue-600">¥{selectedCharge.totalAmount.toFixed(2)}</div>
+                <div className="text-2xl font-bold text-blue-600">¥{formatCurrency(selectedCharge.totalAmount)}</div>
                 <div className="text-xs text-slate-500">总金额</div>
               </div>
             </div>
@@ -211,11 +274,11 @@ const ChargeManagement: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {(selectedCharge.details || selectedCharge.items || []).map((item, idx) => (
+                  {selectedChargeDetails.map((item, idx) => (
                     <tr key={idx} className="hover:bg-slate-50">
                       <td className="px-4 py-3 font-medium text-slate-700">{item.itemName || item.name}</td>
-                      <td className="px-4 py-3 text-slate-500">{item.itemType || item.type}</td>
-                      <td className="px-4 py-3 text-right font-bold text-slate-700">¥{item.itemAmount || item.amount}</td>
+                      <td className="px-4 py-3 text-slate-500">{getItemTypeLabel(item)}</td>
+                      <td className="px-4 py-3 text-right font-bold text-slate-700">¥{formatCurrency(item.itemAmount ?? item.amount)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -223,7 +286,7 @@ const ChargeManagement: React.FC = () => {
             </div>
 
             <div className="p-6 border-t bg-slate-50 flex justify-end gap-3">
-              {selectedCharge.status === 0 && (
+              {canShowPayButton && (
                 <button 
                   onClick={() => openPaymentModal(selectedCharge)}
                   className="px-6 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all flex items-center gap-2"
@@ -231,7 +294,7 @@ const ChargeManagement: React.FC = () => {
                   <CheckCircle size={18}/> 确认收费
                 </button>
               )}
-              {selectedCharge.status === 1 && (
+              {canShowRefundButton && (
                 <button 
                   onClick={() => handleRefund(selectedCharge.id)}
                   className="px-6 py-2 bg-red-50 text-red-600 font-bold rounded-lg border border-red-200 hover:bg-red-100 transition-all flex items-center gap-2"
@@ -260,7 +323,7 @@ const ChargeManagement: React.FC = () => {
             
             <div className="bg-slate-50 p-4 rounded-lg mb-6 text-center">
               <div className="text-sm text-slate-500 mb-1">应收金额</div>
-              <div className="text-3xl font-bold text-blue-600">¥{selectedCharge.totalAmount.toFixed(2)}</div>
+              <div className="text-3xl font-bold text-blue-600">¥{formatCurrency(selectedCharge.totalAmount)}</div>
             </div>
 
             <div className="space-y-3 mb-6">
@@ -281,13 +344,13 @@ const ChargeManagement: React.FC = () => {
             <div className="flex gap-3">
               <button 
                 onClick={() => setShowPaymentModal(false)}
-                className="flex-1 py-2.5 border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 font-medium"
+                className="flex-1 py-2 border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50 font-medium"
               >
                 取消
               </button>
               <button 
                 onClick={handleConfirmPay}
-                className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-lg shadow-blue-200"
+                className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold"
               >
                 确认收款
               </button>

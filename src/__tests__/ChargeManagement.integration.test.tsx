@@ -43,7 +43,7 @@ describe('ChargeManagement 页面集成测试 - 缴费流程', () => {
     const card = screen.getByText('张三').closest('div') as HTMLElement | null;
     expect(card).not.toBeNull();
     await waitFor(() => {
-      expect(within(card as HTMLElement).getByText('已缴费')).toBeInTheDocument();
+      expect(within(card as HTMLElement).getByText('已缴挂号费')).toBeInTheDocument();
     });
 
     alertSpy.mockRestore();
