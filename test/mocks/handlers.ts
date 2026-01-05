@@ -503,7 +503,25 @@ const handlers: unknown[] = [
         const idx = registrations.findIndex(r => r.id === id);
         if (idx === -1) return res(ctx.status(404), ctx.json({ code: 404, message: '挂号单未找到' }));
         registrations[idx] = { ...registrations[idx], status: 3, status_desc: '已退费' };
-        return res(ctx.status(200), ctx.json({ code: 0, data: {} }));
+        return res(ctx.status(200), ctx.json({ code: 0, data: {}, success: true }));
+    }),
+
+    // PUT /api/nurse/registrations/:id/cancel - 护士站取消挂号
+    rest.put('/api/nurse/registrations/:id/cancel', (req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
+        const id = Number(req.params.id as string);
+        const idx = registrations.findIndex(r => r.id === id);
+        if (idx === -1) return res(ctx.status(404), ctx.json({ code: 404, message: '挂号单未找到' }));
+        registrations[idx] = { ...registrations[idx], status: 2, status_desc: '已取消' };
+        return res(ctx.status(200), ctx.json({ code: 200, data: {}, success: true }));
+    }),
+
+    // PUT /api/nurse/registrations/:id/refund - 护士站挂号退费
+    rest.put('/api/nurse/registrations/:id/refund', (req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
+        const id = Number(req.params.id as string);
+        const idx = registrations.findIndex(r => r.id === id);
+        if (idx === -1) return res(ctx.status(404), ctx.json({ code: 404, message: '挂号单未找到' }));
+        registrations[idx] = { ...registrations[idx], status: 3, status_desc: '已退费' };
+        return res(ctx.status(200), ctx.json({ code: 200, data: {}, success: true }));
     }),
 
     // GET /api/common/prescriptions/:id

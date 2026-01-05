@@ -6,9 +6,9 @@ import {
   Trash2, Send, Activity, Stethoscope, LogOut
 } from 'lucide-react';
 import { useStore } from '../../store/store';
-import { api, registrationApi, isCanceledError, pharmacyApi, doctorApi, chargeApi } from '../../services/api';
+import { registrationApi, isCanceledError, pharmacyApi, doctorApi, chargeApi } from '../../services/api';
 import * as logger from '../../services/logger';
-import type { RegistrationVO, MedicalRecordVO, MedicineVO, PatientDetailVO, MedicalRecordDTO } from '../../types';
+import type { RegistrationVO, MedicalRecordVO, MedicineVO, PatientDetailVO, MedicalRecordDTO, PrescriptionVO } from '../../types';
 import { RegistrationStatus } from '../../types';
 
 // 处方项类型
@@ -205,13 +205,24 @@ const DoctorStation: React.FC = () => {
     }
   };
 
-
   // 1. 叫号/接诊
-  const handleCallPatient = (patient: RegistrationVO) => {
+  const handleCallPatient = async (patient: RegistrationVO) => {
     setActivePatientId(patient.id);
-    // 更新状态为"诊中"
+    // DC-02: 立即更新前端状态为"诊中"
     setPatients(prev => prev.map(p => p.id === patient.id ? { ...p, status: RegistrationStatus.IN_CONSULTATION, statusDesc: '诊中' } : p));
     notify(`正在呼叫 ${patient.sequence}号 ${patient.patientName} 到诊室...`, 'info');
+    
+    // DC-02: 同步更新后端数据库状态为"就诊中"(5)
+    try {
+      await doctorApi.updateRegistrationStatus(patient.id, RegistrationStatus.IN_CONSULTATION);
+      logger.debug('[DoctorStation] 患者状态已更新为就诊中:', patient.id);
+    } catch (err) {
+      logger.error('[DoctorStation] 更新患者状态失败:', err);
+      notify('更新患者状态失败，请重试', 'error');
+      // 回滚前端状态
+      setPatients(prev => prev.map(p => p.id === patient.id ? { ...p, status: RegistrationStatus.WAITING, statusDesc: '候诊' } : p));
+      setActivePatientId(null);
+    }
   };
 
   // 2. 药品搜索与添加
@@ -227,10 +238,22 @@ const DoctorStation: React.FC = () => {
   };
 
   const handleAddDrug = (drug: MedicineVO) => {
+    // RX-02: 检查库存是否充足
+    if (drug.stockQuantity <= 0) {
+      notify(`药品【${drug.name}】库存不足，当前库存: ${drug.stockQuantity}`, 'error');
+      return;
+    }
+    
     const existing = prescriptions.find(p => p.drugId === drug.mainId);
     if (existing) {
+      // RX-02: 增加数量时也要检查库存
+      const newCount = existing.count + 1;
+      if (newCount > drug.stockQuantity) {
+        notify(`药品【${drug.name}】库存不足，当前库存: ${drug.stockQuantity}`, 'error');
+        return;
+      }
       setPrescriptions(prev => prev.map(p => 
-        p.drugId === drug.mainId ? { ...p, count: p.count + 1 } : p
+        p.drugId === drug.mainId ? { ...p, count: newCount } : p
       ));
     } else {
       // 将零售价格字符串转换为数值以便做计算
@@ -247,6 +270,31 @@ const DoctorStation: React.FC = () => {
     }
     setShowDrugSearch(false);
     setSearchTerm('');
+    notify(`已添加: ${drug.name}`, 'success');
+  };
+
+  // RX-02: 处方列表中增加数量时验证库存
+  const handleIncreaseCount = async (item: PrescriptionItem) => {
+    try {
+      const drugDetail = await pharmacyApi.getMedicineDetail(item.drugId);
+      if (!drugDetail) {
+        notify(`无法获取药品【${item.name}】信息`, 'error');
+        return;
+      }
+      
+      const newCount = item.count + 1;
+      if (newCount > drugDetail.stockQuantity) {
+        notify(`药品【${item.name}】库存不足，当前库存: ${drugDetail.stockQuantity}`, 'error');
+        return;
+      }
+      
+      setPrescriptions(prev => prev.map(p => 
+        p.drugId === item.drugId ? {...p, count: newCount} : p
+      ));
+    } catch (err) {
+      logger.error('DoctorStation.handleIncreaseCount', err);
+      notify('库存查询失败，请重试', 'error');
+    }
   };
 
   // 保存草稿
@@ -260,9 +308,13 @@ const DoctorStation: React.FC = () => {
         status: 0 // Draft
       };
       await doctorApi.saveMedicalRecord(dto);
-      notify('草稿保存成功', 'success');
-    } catch {
-      notify('保存失败', 'error');
+      // MR-01: 统一提示信息为"病历保存成功"
+      notify('病历保存成功', 'success');
+    } catch (err) {
+      // MR-01: 增强错误提示，显示具体错误信息
+      logger.error('DoctorStation.saveDraft', err);
+      const errorMsg = err instanceof Error ? err.message : '未知错误';
+      notify(`病历保存失败: ${errorMsg}`, 'error');
     } finally {
       setIsSaving(false);
     }
@@ -295,39 +347,50 @@ const DoctorStation: React.FC = () => {
         await doctorApi.submitMedicalRecord(savedRecord.mainId);
       }
 
-      // 2. 发送处方（使用医生专用创建接口：POST /api/doctor/prescriptions/create）
+      // 2. 发送处方
       if (prescriptions.length > 0) {
-        // 构建 PrescriptionDTO，注意：绝对不要传 doctorId，后端从 Token 中解析当前医生
-        const dto = {
-          registrationId: activePatient.id,
-          prescriptionType: 1, // 默认为西药
-          validityDays: 3,
+        // RX-02: 提交前验证所有药品库存
+        for (const item of prescriptions) {
+          try {
+            const drugDetail = await pharmacyApi.getMedicineDetail(item.drugId);
+            if (!drugDetail || drugDetail.stockQuantity < item.count) {
+              notify(`药品【${item.name}】库存不足，当前库存: ${drugDetail?.stockQuantity ?? 0}`, 'error');
+              setLoading(false);
+              return;
+            }
+          } catch (err) {
+            logger.error('DoctorStation.checkStock', err);
+            notify(`无法验证药品【${item.name}】库存，请重试`, 'error');
+            setLoading(false);
+            return;
+          }
+        }
+        
+        const rx: PrescriptionVO = {
+          id: 0,
+          patientName: activePatient.patientName,
+          gender: activePatient.gender,
+          age: activePatient.age,
+          regNo: activePatient.regNo,
+          totalAmount: prescriptions.reduce((sum, item) => sum + (item.price * item.count), 0).toFixed(2),
           items: prescriptions.map(p => ({
-            medicineId: p.drugId,
-            quantity: p.count,
-            frequency: p.usage, // 使用字段复用为频率/说明
-            instructions: p.usage
+            drugName: p.name,
+            spec: p.spec,
+            count: p.count,
+            usage: p.usage,
+            medicineId: p.drugId
           }))
         };
-
-        try {
-          // 明确在 header 中带上 Authorization（从 localStorage 读取）以满足安全要求
-          const token = localStorage.getItem('his_token') ?? '';
-          const res = await api.post('/doctor/prescriptions/create', dto, { headers: { Authorization: `Bearer ${token}` } });
-          // 兼容后端响应包装 {code, message, data}
-          const sent = (res?.data && (res.data.data ?? res.data)) as unknown;
-          const maybe = sent as { mainId?: number; id?: number } | null;
-          const prescId = maybe?.mainId ?? maybe?.id;
-          if (prescId && prescId > 0) {
-            // 3. 生成处方收费单（仅处方费）
-            await chargeApi.createPrescriptionCharge({ registrationId: activePatient.id, prescriptionIds: [prescId] });
-            notify('处方已创建并发送至药房', 'success');
-          } else {
-            notify('处方创建失败：后端未返回处方ID', 'error');
-          }
-        } catch (e) {
-          logger.error('DoctorStation.createPrescription', e);
-          notify('处方创建失败，请重试', 'error');
+        const sentRx = await pharmacyApi.sendPrescription(rx);
+        if (sentRx) {
+          // RX-01: 单独提示处方开具成功并显示总金额
+          notify(`处方开具成功，总金额：¥${rx.totalAmount}`, 'success');
+          
+          // 3. 生成收费单 (如果有处方)
+          await chargeApi.create({
+            registrationId: activePatient.id,
+            prescriptionIds: [sentRx.id]
+          });
         }
       } else {
         // 如果没有处方，也可能需要生成一个纯诊疗费的收费单（视业务需求而定）
@@ -400,7 +463,7 @@ const DoctorStation: React.FC = () => {
             patients.map(p => (
               <div 
                 key={p.id}
-                onClick={() => activePatientId !== p.id && handleCallPatient(p)}
+                onClick={() => activePatientId !== p.id && void handleCallPatient(p)}
                 onContextMenu={(e) => handleViewHistory(e, p)}
                 className={`p-4 border-b cursor-pointer transition-all hover:bg-slate-50 group relative ${
                   activePatientId === p.id ? 'bg-blue-50 border-l-4 border-l-blue-600' : 'border-l-4 border-l-transparent'
@@ -420,6 +483,12 @@ const DoctorStation: React.FC = () => {
                   <span>{p.genderDesc || '—'} | {p.age}岁</span>
                   <span className="font-mono text-slate-400">{(p.createTime || '').slice(0,5)}</span>
                 </div>
+                {/* DC-01: 显示病历号 */}
+                {p.mrn && (
+                  <div className="text-xs text-blue-600 font-mono mt-1">
+                    病历号: {p.mrn}
+                  </div>
+                )}
                 
                 {/* 悬停显示的叫号按钮 */}
                 {activePatientId !== p.id && (
@@ -483,8 +552,8 @@ const DoctorStation: React.FC = () => {
                     </h3>
                     <button 
                       onClick={handleSaveDraft} 
-                      disabled={isSaving}
-                      className="text-xs text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                      disabled={isSaving || loading}
+                      className="text-xs text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isSaving ? '保存中...' : '保存草稿'}
                     </button>
@@ -672,7 +741,7 @@ const DoctorStation: React.FC = () => {
                       >-</button>
                       <span className="w-8 text-center text-xs font-mono">{item.count}</span>
                       <button 
-                        onClick={() => setPrescriptions(prev => prev.map(p => p.drugId === item.drugId ? {...p, count: p.count+1} : p))}
+                        onClick={() => handleIncreaseCount(item)}
                         className="w-6 h-6 flex items-center justify-center hover:bg-slate-200 text-slate-500"
                       >+</button>
                     </div>

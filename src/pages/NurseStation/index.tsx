@@ -3,11 +3,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ClipboardList, Search, Plus, Activity, CreditCard, Phone, ShieldCheck, LogOut, User as UserIcon } from 'lucide-react';
 import { useStore } from '../../store/store';
-import { basicApi, registrationApi, patientApi, logApiError, isCanceledError, chargeApi } from '../../services/api';
+import { basicApi, registrationApi, patientApi, logApiError, isCanceledError, api } from '../../services/api';
 import * as logger from '../../services/logger';
 import type { RawDoctor, RawDepartment } from '../../services/api';
-import type { RegistrationVO, Patient, Gender } from '../../types';
-import { GENDER, RegistrationStatus } from '../../types';
+import type { RegistrationVO, Patient } from '../../types';
 import { validateIdCard, validatePhone, validateName, validateAge, parseIdCard } from '../../utils/validators';
 
 /**
@@ -71,105 +70,27 @@ const NurseStation: React.FC = () => {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showPaymentPrompt, setShowPaymentPrompt] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
-
-  // Registration payment modal state
-  const [regPaymentModal, setRegPaymentModal] = useState<{ visible: boolean; charge: import('../../types').ChargeVO | null; registrationId?: number }>({ visible: false, charge: null, registrationId: undefined });
-  const [regPaymentMethod, setRegPaymentMethod] = useState<number>(1); // payment method for registration payment
-
-  const formatCurrency = (v?: string | number | null) => {
-    if (v == null) return '0.00';
-    const n = typeof v === 'string' ? Number(v) : v;
-    if (Number.isNaN(n)) return '0.00';
-    return n.toFixed(2);
-  };
-
-  // Handle pay registration from context menu
-  const handlePayRegistrationFromMenu = async (reg?: RegistrationVO | null) => {
-    if (!reg) return;
-    try {
-      // 1. 检查挂号费是否已支付
-      const paid = await chargeApi.checkRegistrationPaymentStatus(reg.id);
-      if (paid) {
-        useStore.getState().notify('该挂号单已缴费，无需重复缴费', 'info');
-        return;
-      }
-
-      // 2. 创建挂号收费单（仅挂号费）
-      const charge = await chargeApi.createRegistrationCharge(reg.id);
-      if (!charge) {
-        useStore.getState().notify('无法创建挂号收费单，请稍后重试', 'error');
-        return;
-      }
-
-      // 3. 显示收款弹窗（携带挂号ID以便后续更新状态）
-      setRegPaymentModal({ visible: true, charge, registrationId: reg.id });
-      setRegPaymentMethod(1);
-    } catch (err) {
-      logApiError('NurseStation.handlePayRegistrationFromMenu', err);
-      useStore.getState().notify('检查/创建收费单失败', 'error');
-    }
-  };
-
-  const confirmRegPayment = async () => {
-    const ch = regPaymentModal.charge;
-    if (!ch) return;
-    try {
-      const generateTransactionNo = (paymentMethod: number): string | undefined => {
-        const timestamp = Date.now();
-        const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-        switch (paymentMethod) {
-          case 1: return undefined;
-          case 2: return `BC${timestamp}${random}`;
-          case 3: return `WX${timestamp}${random}`;
-          case 4: return `ALI${timestamp}${random}`;
-          case 5: return `YB${timestamp}${random}`;
-          default: return `TX${timestamp}${random}`;
-        }
-      };
-
-      const transactionNo = generateTransactionNo(regPaymentMethod);
-      const paidCharge = await chargeApi.pay(ch.id, { paymentMethod: regPaymentMethod, paidAmount: ch.totalAmount, transactionNo });
-      if (paidCharge) {
-        useStore.getState().notify('挂号收费成功', 'success');
-        // 关闭弹窗并清理挂号关联
-        setRegPaymentModal({ visible: false, charge: null, registrationId: undefined });
-        // 更新本地挂号状态为已缴挂号费（便于立即展示）
-        if (typeof regPaymentModal.registrationId !== 'undefined' && regPaymentModal.registrationId !== null) {
-          setPatients(prev => prev.map(p => p.id === regPaymentModal.registrationId ? { ...p, status: RegistrationStatus.PAID_REGISTRATION, statusDesc: '已缴挂号费' } : p));
-        }
-        // 刷新本地挂号列表 & 收费列表（如果存在）
-        await loadPatients(search);
-      } else {
-        useStore.getState().notify('挂号收费失败，请重试', 'error');
-      }
-    } catch (err) {
-      logApiError('NurseStation.confirmRegPayment', err);
-      useStore.getState().notify('缴费请求出错', 'error');
-    }
-  };
   const [refundNotice, setRefundNotice] = useState<{ visible: boolean; message: string }>({ visible: false, message: '' });
   const [cancelDialog, setCancelDialog] = useState<{ visible: boolean; regId?: number; reason: string }>({ visible: false, reason: '' });
 
   const normalizeReg = useCallback((r: ReceivedRegistration): RegistrationVO => {
-    // 假设请求响应已被 deepCamelize 转为 camelCase；这里仅做值层面的规范化（性别推断、默认值）
-    const idCardVal = ((r as Partial<RegistrationVO>).idCard ?? (r as unknown as Record<string, unknown>)['idCardNo']) as string | undefined;
+    const rr = r as unknown as Record<string, unknown>;
+    const idCardVal = (rr['idCard'] as string | undefined) ?? (rr['id_card'] as string | undefined) ?? undefined;
     const inferred = inferGenderFromId(idCardVal);
-
+    // normalize gender: prefer inferred idCard, else use provided gender (number or numeric string), default to 1
     let genderVal: number | undefined = undefined;
     if (typeof inferred !== 'undefined') genderVal = inferred;
-    else if (typeof r.gender === 'number') genderVal = r.gender as number;
+    else if (typeof r.gender === 'number') genderVal = r.gender;
     else if (typeof r.gender === 'string' && /^\d+$/.test(r.gender)) genderVal = parseInt(r.gender, 10);
-
-    const rr = r as unknown as Record<string, unknown>;
     return {
       ...(r as RegistrationVO),
-      gender: typeof genderVal !== 'undefined' ? (genderVal as Gender) : GENDER.Male,
-      idCard: (rr['idCard'] as string | undefined) ?? (rr['idCardNo'] as string | undefined) ?? (r as RegistrationVO).idCard ?? '',
-      patientName: (rr['patientName'] as string | undefined) ?? (rr['name'] as string | undefined) ?? (r as RegistrationVO).patientName ?? '未知患者',
-      phone: (rr['phone'] as string | undefined) ?? (rr['mobile'] as string | undefined) ?? '',
-      insuranceType: (rr['insuranceType'] as string | undefined) ?? (rr['insurance'] as string | undefined) ?? '自费',
-      deptName: (rr['deptName'] as string | undefined) ?? (rr['departmentName'] as string | undefined) ?? '',
-      doctorName: (rr['doctorName'] as string | undefined) ?? (rr['doctor'] as string | undefined) ?? ''
+      gender: typeof genderVal !== 'undefined' ? genderVal : 0,      // 兼容后端命名：id_card / patient_name / phone 等
+      idCard: (rr['idCard'] as string | undefined) ?? (rr['id_card'] as string | undefined) ?? (rr['id_card_no'] as string | undefined) ?? (r as RegistrationVO).idCard,
+      patientName: (rr['patientName'] as string | undefined) ?? (rr['patient_name'] as string | undefined) ?? (rr['name'] as string | undefined) ?? (r as RegistrationVO).patientName,
+      phone: (rr['phone'] as string | undefined) ?? (rr['mobile'] as string | undefined) ?? (r as RegistrationVO).phone,
+      insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
+      deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
+      doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? ''
     };
   }, []);
 
@@ -213,51 +134,30 @@ const NurseStation: React.FC = () => {
     setCancelDialog({ visible: false, reason: '' });
     
     try {
-      // 保存取消前状态用于决定是否需要额外退费处理
-      const original = patients.find(p => p.id === regId);
-      const originalStatus = original?.status;
-
-      // 使用 registrationApi 统一取消接口
-      const cancelResult = await registrationApi.cancel(regId, reason);
-      if (!cancelResult.success) {
-        setRefundNotice({ visible: true, message: '❌ 取消失败：' + (cancelResult.message ?? '未知错误') });
+      const cancelRes = await api.put(`/nurse/registrations/${regId}/cancel`, reason ? `reason=${encodeURIComponent(reason)}` : '', {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      const cancelData = cancelRes?.data;
+      const cancelSuccess = cancelData?.code === 200 || cancelData?.success === true;
+      if (!cancelSuccess) {
+        setRefundNotice({ visible: true, message: '❌ 取消失败：' + (cancelData?.message ?? '未知错误') });
         setTimeout(() => setRefundNotice({ visible: false, message: '' }), 3000);
         return;
       }
-
-      // 如果原先已缴费，尝试通过收费模块查找对应的收费单并发起退费
-      if (originalStatus === RegistrationStatus.PAID_REGISTRATION) {
-        try {
-          const chargesRes = await chargeApi.getChargesByRegistration(regId);
-          const regCharges = chargesRes?.registration ?? [];
-          let anyRefunded = false;
-          for (const c of regCharges.filter(rc => rc.status === 1)) {
-            const refunded = await chargeApi.refund(c.id, { refundReason: reason ?? '挂号取消自动退费' });
-            if (refunded) anyRefunded = true;
-          }
-          if (anyRefunded) {
-            const refundResult = await registrationApi.refund(regId);
-            if (refundResult.success) {
-              setRefundNotice({ visible: true, message: '✅ 取消成功，挂号费已退回' });
-              setPatients(prev => prev.map(p => p.id === regId ? { ...p, status: RegistrationStatus.REFUNDED, statusDesc: '已退费' } : p));
-            } else {
-              setRefundNotice({ visible: true, message: '⚠️ 取消成功，但登记退费失败：请联系管理员' });
-              setPatients(prev => prev.map(p => p.id === regId ? { ...p, status: RegistrationStatus.CANCELLED, statusDesc: '已取消' } : p));
-            }
-          } else {
-            setRefundNotice({ visible: true, message: '⚠️ 挂号已取消，但退费失败：请联系管理员' });
-            setPatients(prev => prev.map(p => p.id === regId ? { ...p, status: RegistrationStatus.CANCELLED, statusDesc: '已取消' } : p));
-          }
-        } catch (e) {
-          logApiError('NurseStation.executeCancelRegistration.refund', e);
-          setRefundNotice({ visible: true, message: '⚠️ 取消成功，但退费过程中出错：请联系管理员' });
-          setPatients(prev => prev.map(p => p.id === regId ? { ...p, status: RegistrationStatus.CANCELLED, statusDesc: '已取消' } : p));
-        }
+      // 取消成功后自动退费
+      const refundRes = await api.put(`/nurse/registrations/${regId}/refund`, '', {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      const refundData = refundRes?.data;
+      // 修正判断逻辑：检查 data 字段或 success 字段
+      const refundSuccess = refundData?.success === true || (refundData?.code === 200 && refundData?.data !== undefined);
+      
+      if (refundSuccess) {
+        setRefundNotice({ visible: true, message: '✅ 退号成功，挂号费已返回原账号' });
       } else {
-        setRefundNotice({ visible: true, message: '✅ 取消成功' });
-        setPatients(prev => prev.map(p => p.id === regId ? { ...p, status: RegistrationStatus.CANCELLED, statusDesc: '已取消' } : p));
+        setRefundNotice({ visible: true, message: '⚠️ 挂号已取消，但退费失败：' + (refundData?.message ?? '请联系管理员') });
       }
-      await loadPatients(search);
+      setPatients(prev => prev.filter(p => p.id !== regId));
       setTimeout(() => setRefundNotice({ visible: false, message: '' }), 3000);
     } catch (err) {
       logApiError('NurseStation.executeCancelRegistration', err);
@@ -384,8 +284,7 @@ const NurseStation: React.FC = () => {
         if (list.length === 1) {
           const p = list[0];
           setFormData(prev => {
-            const rr = p as unknown as Record<string, unknown>;
-            const gInferred = inferGenderFromId((rr['idCard'] as string | undefined) ?? undefined);
+            const gInferred = inferGenderFromId(p.id_card ?? undefined);
             const ageFromId = parsed?.age ?? prev.age;
             return ({
                 ...prev,
@@ -393,7 +292,7 @@ const NurseStation: React.FC = () => {
                 gender: String(typeof gInferred !== 'undefined' ? gInferred : (prev.gender ?? '0')),
                 age: String(ageFromId),
                 phone: p.phone ?? prev.phone,
-                idCard: (rr['idCard'] as string | undefined) ?? prev.idCard,
+                idCard: p.id_card ?? prev.idCard,
                 insurance: p.insuranceType ?? prev.insurance,
                 type: '复诊'
               });
@@ -437,17 +336,16 @@ const NurseStation: React.FC = () => {
   };
 
   const fillFromOld = (p: Patient) => {
-    const rr = p as unknown as Record<string, unknown>;
-    const parsed = (rr['idCard'] as string | undefined) ? parseIdCard(rr['idCard'] as string) : null;
+    const parsed = p.id_card ? parseIdCard(p.id_card) : null;
     setFormData(prev => {
-      const gInferred = inferGenderFromId((rr['idCard'] as string | undefined) ?? undefined);
+      const gInferred = inferGenderFromId(p.id_card ?? undefined);
       return ({
         ...prev,
         name: p.name || prev.name,
         gender: String(typeof gInferred !== 'undefined' ? gInferred : (parsed?.gender ?? prev.gender ?? '0')),
         age: String(parsed?.age ?? p.age ?? prev.age),
         phone: p.phone ?? prev.phone,
-        idCard: (rr['idCard'] as string | undefined) ?? prev.idCard,
+        idCard: p.id_card ?? prev.idCard,
         insurance: p.insuranceType ?? prev.insurance,
         type: '复诊'
       });
@@ -513,7 +411,7 @@ const NurseStation: React.FC = () => {
     const payload = {
       patientName: formData.name,
       idCard: formData.idCard,
-      gender: idCardInfo?.gender ?? (typeof formData.gender === 'string' && /^\d+$/.test(formData.gender) ? (parseInt(formData.gender, 10) as Gender) : GENDER.Male),
+      gender: idCardInfo?.gender ?? (typeof formData.gender === 'string' && /^\d+$/.test(formData.gender) ? parseInt(formData.gender, 10) : 0),
       age: idCardInfo?.age ?? (Number(formData.age) || 0),
       phone: formData.phone,
       deptId: Number(formData.deptId),
@@ -546,11 +444,25 @@ const NurseStation: React.FC = () => {
           return;
         }
 
-        // 使用已定义的 normalizeReg（已假设后端响应为 camelCase），并补充默认值
+        // 归一化后显示回执
+        const normalizeReg = (r: ReceivedRegistration): RegistrationVO => ({
+          ...(r as RegistrationVO),
+          insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
+          deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
+          doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? '',
+          statusDesc: r.statusDesc ?? '候诊', // RG-01/RG-03: 确保显示"候诊"状态
+          status: r.status ?? 4 // 4=已缴挂号费状态
+        });
         let normalized = normalizeReg(res.data);
-        normalized = { ...normalized, insuranceType: normalized.insuranceType ?? '自费', deptName: normalized.deptName ?? '', doctorName: normalized.doctorName ?? '' } as RegistrationVO;
-        // 若后端已标记为已缴挂号费，则确保本地展示为已缴挂号费
-        if (normalized.status === RegistrationStatus.PAID_REGISTRATION) normalized.statusDesc = normalized.statusDesc || '已缴挂号费';
+        
+        // RG-01: 验证并格式化病历号（如P2024050001）
+        if (normalized.mrn && !/^P\d{10}$/.test(normalized.mrn)) {
+          // 如果病历号格式不正确，尝试格式化
+          const mrnDigits = normalized.mrn.replace(/\D/g, '');
+          if (mrnDigits.length > 0) {
+            normalized = { ...normalized, mrn: `P${mrnDigits.padStart(10, '0')}` };
+          }
+        }
         // 如果后端没有返回 queueNo，基于当前科室生成本地队列号(A/B/C + 3位序号)
         if (!normalized.queueNo) {
           try {
@@ -645,7 +557,7 @@ const NurseStation: React.FC = () => {
                   {oldPatients.map(p => (
                     <div key={p.main_id} className="flex items-center justify-between py-1 border-b last:border-b-0">
                       <div className="text-sm">
-                        <div className="font-medium">{p.name} <span className="text-xs text-slate-400">({String((p as unknown as Record<string, unknown>)['idCard'] ?? '')})</span></div>
+                        <div className="font-medium">{p.name} <span className="text-xs text-slate-400">({p.id_card})</span></div>
                         <div className="text-xs text-slate-400">{p.phone}</div>
                       </div>
                       <div>
@@ -662,6 +574,7 @@ const NurseStation: React.FC = () => {
               <div className="relative">
                 <CreditCard className="absolute left-3 top-3 text-slate-400" size={18} />
                 <input
+                  tabIndex={1}
                   className={`w-full pl-10 p-3 border rounded-lg text-sm outline-none transition ${errors.idCard ? 'border-red-500 bg-red-50' : 'bg-slate-50'}`}
                   placeholder="扫描或输入身份证号"
                   value={formData.idCard}
@@ -677,6 +590,7 @@ const NurseStation: React.FC = () => {
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2">
                 <input
+                  tabIndex={2}
                   className={`w-full p-3 border rounded-lg text-sm transition ${errors.name ? 'border-red-500 bg-red-50' : 'bg-white'}`}
                   placeholder="患者姓名"
                   value={formData.name}
@@ -689,6 +603,7 @@ const NurseStation: React.FC = () => {
               <div className="flex gap-2">
                 <button
                   type="button"
+                  tabIndex={3}
                   onClick={() => setFormData({...formData, gender: '0'})}
                   className={`flex-1 p-3 border rounded-lg text-sm font-medium transition-all ${formData.gender === '0' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}
                 >
@@ -696,6 +611,7 @@ const NurseStation: React.FC = () => {
                 </button>
                 <button
                   type="button"
+                  tabIndex={4}
                   onClick={() => setFormData({...formData, gender: '1'})}
                   className={`flex-1 p-3 border rounded-lg text-sm font-medium transition-all ${formData.gender === '1' ? 'bg-pink-50 border-pink-500 text-pink-700' : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'}`}
                 >
@@ -711,6 +627,7 @@ const NurseStation: React.FC = () => {
               <div className="col-span-2 relative">
                 <Phone className="absolute left-3 top-3 text-slate-400" size={18} />
                 <input
+                  tabIndex={5}
                   className={`w-full pl-10 p-3 border rounded-lg text-sm transition ${errors.phone ? 'border-red-500 bg-red-50' : 'bg-white'}`}
                   placeholder="手机号码"
                   value={formData.phone}
@@ -722,7 +639,7 @@ const NurseStation: React.FC = () => {
 
               <div className="col-span-2 relative">
                 <ShieldCheck className="absolute left-3 top-3 text-slate-400" size={18} />
-                <select className="w-full pl-10 p-3 border rounded-lg text-sm bg-white" value={formData.insurance} onChange={e => setFormData({...formData, insurance: e.target.value})}>
+                <select tabIndex={6} className="w-full pl-10 p-3 border rounded-lg text-sm bg-white" value={formData.insurance} onChange={e => setFormData({...formData, insurance: e.target.value})}>
                   <option value="自费">自费</option>
                   <option value="职工医保">职工医保</option>
                   <option value="居民医保">居民医保</option>
@@ -832,7 +749,7 @@ const NurseStation: React.FC = () => {
                     <span className="font-mono font-bold text-slate-700 bg-slate-100 px-2 py-1 rounded">{p.queueNo ? `${p.queueNo}号` : (typeof p.sequence !== 'undefined' && p.sequence !== null ? `${p.sequence}号` : '-')}</span>
                   </td>
                   <td className="p-4">
-                    <div className="font-medium text-slate-800">{p.patientName}</div>
+                    <div className="font-bold text-lg text-slate-900">{p.patientName}</div>
                     <div className="text-xs text-slate-400 mt-0.5">{p.genderDesc || '—'} | {p.age}岁</div>
                   </td>
                   <td className="p-4">
@@ -843,8 +760,24 @@ const NurseStation: React.FC = () => {
                   <td className="p-4 text-slate-600">{p.deptName}</td>
                   <td className="p-4 text-slate-600">{doctors.find(d => d.id === p.doctorId)?.name || p.doctorName}</td>
                   <td className="p-4">
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-50 text-yellow-700 border border-yellow-100">
-                      <span className="w-1.5 h-1.5 rounded-full bg-yellow-500"></span>
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
+                      p.status === 0 ? 'bg-yellow-50 text-yellow-700 border border-yellow-100' :
+                      p.status === 1 ? 'bg-green-50 text-green-700 border border-green-100' :
+                      p.status === 2 ? 'bg-gray-50 text-gray-700 border border-gray-100' :
+                      p.status === 3 ? 'bg-red-50 text-red-700 border border-red-100' :
+                      p.status === 4 ? 'bg-blue-50 text-blue-700 border border-blue-100' :
+                      p.status === 5 ? 'bg-purple-50 text-purple-700 border border-purple-100' :
+                      'bg-slate-50 text-slate-700 border border-slate-100'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        p.status === 0 ? 'bg-yellow-500' :
+                        p.status === 1 ? 'bg-green-500' :
+                        p.status === 2 ? 'bg-gray-500' :
+                        p.status === 3 ? 'bg-red-500' :
+                        p.status === 4 ? 'bg-blue-500' :
+                        p.status === 5 ? 'bg-purple-500' :
+                        'bg-slate-500'
+                      }`}></span>
                       {p.statusDesc}
                     </span>
                   </td>
@@ -879,10 +812,13 @@ const NurseStation: React.FC = () => {
 
           <div className="text-sm text-slate-700 space-y-1">
             <div><span className="font-medium">挂号单号：</span>{receipt!.regNo}</div>
+            <div><span className="font-medium">病历号：</span><span className="font-mono text-blue-600">{receipt!.mrn}</span></div>
             <div><span className="font-medium">患者：</span>{receipt!.patientName}</div>
             <div><span className="font-medium">科室：</span>{receipt!.deptName}</div>
             <div><span className="font-medium">医生：</span>{receipt!.doctorName}</div>
             <div><span className="font-medium">排队号：</span>{receipt!.queueNo ?? receipt!.sequence}</div>
+            <div><span className="font-medium">就诊类型：</span><span className={receipt!.type === '复诊' ? 'text-blue-600' : 'text-green-600'}>{receipt!.type ?? '初诊'}</span></div>
+            <div><span className="font-medium">就诊状态：</span><span className="text-yellow-600">{receipt!.statusDesc ?? '候诊'}</span></div>
             <div><span className="font-medium">就诊日期：</span>{receipt!.visitDate ?? receipt!.createTime ?? receipt!.createdAt}</div>
           </div>
 
@@ -900,7 +836,6 @@ const NurseStation: React.FC = () => {
               }}
               className="flex-1 py-2 text-sm bg-teal-600 text-white rounded-lg"
             >打印小卡</button>
-            <button onClick={() => handlePayRegistrationFromMenu(receipt)} className="flex-1 py-2 text-sm bg-green-50 text-green-700 rounded-lg">去缴费</button>
             <button onClick={() => setReceipt(null)} className="flex-1 py-2 text-sm border rounded-lg">关闭</button>
           </div>
         </div>
@@ -972,44 +907,10 @@ const NurseStation: React.FC = () => {
         </div>
       </div>
     )}
-
-    {/* --- 新增：挂号费收取弹窗 --- */}
-    {regPaymentModal.visible && regPaymentModal.charge && (
-      <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/40">
-        <div className="bg-white rounded-xl shadow-2xl w-96 p-6">
-          <h3 className="text-lg font-bold mb-4">挂号缴费</h3>
-          <div className="bg-slate-50 p-4 rounded mb-4 text-center">
-            <div className="text-sm text-slate-500 mb-1">应收金额</div>
-            <div className="text-3xl font-bold text-blue-600">¥{formatCurrency(regPaymentModal.charge.totalAmount)}</div>
-          </div>
-
-          <div className="space-y-3 mb-6">
-            <label className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${regPaymentMethod === 1 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
-              <input type="radio" name="payReg" checked={regPaymentMethod === 1} onChange={() => setRegPaymentMethod(1)} className="accent-blue-600" />
-              <span className="font-medium text-slate-700">现金支付</span>
-            </label>
-            <label className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${regPaymentMethod === 3 ? 'border-green-500 bg-green-50' : 'border-slate-200 hover:border-green-300'}`}>
-              <input type="radio" name="payReg" checked={regPaymentMethod === 3} onChange={() => setRegPaymentMethod(3)} className="accent-green-600" />
-              <span className="font-medium text-slate-700">微信支付</span>
-            </label>
-            <label className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer transition-all ${regPaymentMethod === 4 ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
-              <input type="radio" name="payReg" checked={regPaymentMethod === 4} onChange={() => setRegPaymentMethod(4)} className="accent-blue-600" />
-              <span className="font-medium text-slate-700">支付宝</span>
-            </label>
-          </div>
-
-          <div className="flex gap-3">
-            <button onClick={() => setRegPaymentModal({ visible: false, charge: null })} className="flex-1 py-2.5 border border-slate-300 text-slate-600 rounded-lg hover:bg-slate-50">取消</button>
-            <button onClick={confirmRegPayment} className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700">确认收款</button>
-          </div>
-        </div>
-      </div>
-    )}
     {contextMenu.visible && contextMenu.reg && (
       <div style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y, zIndex: 60 }} onClick={e => e.stopPropagation()}>
         <div className="bg-white border rounded shadow-md py-1">
           <button onClick={handleShowDetailsFromMenu} className="block px-4 py-2 text-sm w-full text-left">查看挂号单</button>
-          <button onClick={() => { handlePayRegistrationFromMenu(contextMenu.reg!); }} className="block px-4 py-2 text-sm w-full text-left text-green-600">收取挂号费</button>
           <button onClick={handleCancelFromMenu} className="block px-4 py-2 text-sm w-full text-left text-red-600">退号</button>
         </div>
       </div>

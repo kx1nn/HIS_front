@@ -11,9 +11,6 @@ export interface User {
   relatedId?: number;
 }
 
-export const GENDER = { Male: 0 as const, Female: 1 as const };
-export type Gender = typeof GENDER[keyof typeof GENDER];
-
 /**
  * 医生信息（基础展示与排班数据）
  */
@@ -39,13 +36,12 @@ export interface Department {
 export interface RegistrationDTO {
   patientName: string;
   idCard: string;
-  gender: Gender; // 0=男, 1=女
+  gender: number; // 1:女, 0:男
   age: number;
   phone: string;
   deptId: number;
   doctorId: number;
-  regFee?: number;
-  registrationFee?: number; // 可选别名，兼容后端命名 regFee / registrationFee
+  regFee: number;
   insuranceType: string; // 医保类型
   type: string; // 初诊/复诊
   // 以下为分阶段收费扩展字段（可选）
@@ -91,7 +87,7 @@ export interface Patient {
   main_id: number; // 主键
   patient_no: string;
   name: string;
-  gender: Gender;
+  gender: number;
   is_deleted: number;
   created_at: string;
   updated_at: string;
@@ -188,17 +184,13 @@ export interface Drug {
   spec?: string | null;           // specification
   unit?: string | null;           // unit
   price: string;           // retail_price (retailPrice) - use string to preserve decimal precision
-  retailPrice?: string;    // 可选别名，兼容返回字段名 retailPrice
 
   // 可选的药师专用/可见字段
   purchasePrice?: string | null;  // 进货价（仅药师可见） - DECIMAL(10,4)
-  profitMargin?: number | null;   // 利润率（仅药师可见，百分比)
+  profitMargin?: number | null;   // 利润率（仅药师可见，百分比）
 
   // 库存字段
   stock: number;           // stock_quantity
-  stockQuantity?: number;  // 可选别名，兼容返回字段名 stockQuantity
-
-
   minStock?: number | null;       // min_stock（仅药师可见）
   maxStock?: number | null;       // max_stock（仅药师可见）
 
@@ -227,7 +219,7 @@ export interface DoctorRecord {
   department_main_id: number;
   doctor_no: string;
   name: string;
-  gender: Gender;
+  gender: number;
   status: number;
   is_deleted: number;
   created_at: string;
@@ -305,9 +297,6 @@ export interface MedicineVO {
   approvalNo?: string | null; // 批准文号
   storageCondition?: string | null; // 储存条件
   version?: number | null; // 版本号
-  batchNumber?: string | null; // 批次号（可选，兼容后端 batchNumber/batch_number）
-  productionDate?: string | null; // 生产日期（兼容 productionDate/production_date）
-  expiryDate?: string | null; // 过期日期（兼容 expiryDate/expiry_date）
   createdAt?: string;          // 创建时间
   updatedAt?: string;          // 更新时间
 }
@@ -372,7 +361,7 @@ export interface PatientDetailVO {
   patientId: number;
   patientNo: string;
   name: string;
-  gender: Gender;
+  gender: number;
   genderDesc: string;
   age: number;
   birthDate: string;
@@ -468,7 +457,7 @@ export interface PrescriptionItemVO {
 export interface PrescriptionVO {
   id: number;
   patientName: string;
-  gender: Gender;
+  gender: number;
   genderDesc?: string; // 性别描述："男"/"女"
   age: number;
   regNo?: string | null;
@@ -558,7 +547,7 @@ export interface ChargeVO {
   patientId: number;
   patientName: string;
   totalAmount: string; // DECIMAL(10,2)
-  status: RegistrationStatusValue; // 分阶段收费状态（使用 RegistrationStatus 0-5）
+  status: number; // 0: Unpaid, 1: Paid, 2: Refunded
   statusDesc: string;
   details: ChargeDetailVO[];
   createdAt: string;

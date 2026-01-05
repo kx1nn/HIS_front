@@ -455,8 +455,8 @@ export const registrationApi = {
   // 1. 提交挂号接口
   create: async (data: RegistrationDTO): Promise<{ success: boolean; data?: RegistrationVO; message?: string }> => {
     try {
-      // 发送前规范化字段：兼容 regFee 和 registrationFee 两种命名
-      const payload = { ...data, regFee: data.regFee ?? data.registrationFee, gender: (data.gender as unknown) as import('../types').Gender } as RegistrationDTO & { regFee?: number };
+      // 发送前规范化字段：确保gender为number类型
+      const payload = { ...data, gender: Number(data.gender) } as RegistrationDTO;
       // 新后端路径优先：/nurse/registrations
       try {
         const res = await api.post('/nurse/registrations', payload);
@@ -692,9 +692,6 @@ export const pharmacyApi = {
           approvalNo: (src['approvalNo'] ?? src['approval_no'] ?? null) as string | null,
           storageCondition: (src['storageCondition'] ?? src['storage_condition'] ?? null) as string | null,
           version: (src['version'] ?? null) as number | null,
-          batchNumber: (src['batchNumber'] ?? src['batch_number'] ?? null) as string | null,
-          productionDate: (src['productionDate'] ?? src['production_date'] ?? null) as string | null,
-          expiryDate: (src['expiryDate'] ?? src['expiry_date'] ?? null) as string | null,
         } as Drug;
       };
       if (data && typeof data === 'object' && 'content' in (data as Record<string, unknown>)) {
@@ -842,9 +839,6 @@ export const pharmacyApi = {
           approvalNo: (o['approvalNo'] ?? o['approval_no'] ?? null) as string | null,
           storageCondition: (o['storageCondition'] ?? o['storage_condition'] ?? null) as string | null,
           version: (o['version'] ?? null) as number | null,
-          batchNumber: (o['batchNumber'] ?? o['batch_number'] ?? null) as string | null,
-          productionDate: (o['productionDate'] ?? o['production_date'] ?? null) as string | null,
-          expiryDate: (o['expiryDate'] ?? o['expiry_date'] ?? null) as string | null,
         };
         return drug;
       }
@@ -898,9 +892,6 @@ export const pharmacyApi = {
           approvalNo: (o['approvalNo'] ?? o['approval_no'] ?? null) as string | null,
           storageCondition: (o['storageCondition'] ?? o['storage_condition'] ?? null) as string | null,
           version: (o['version'] ?? null) as number | null,
-          batchNumber: (o['batchNumber'] ?? o['batch_number'] ?? null) as string | null,
-          productionDate: (o['productionDate'] ?? o['production_date'] ?? null) as string | null,
-          expiryDate: (o['expiryDate'] ?? o['expiry_date'] ?? null) as string | null,
         };
         return out;
       }

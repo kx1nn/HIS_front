@@ -24,7 +24,7 @@ describe('NurseStation 集成测试 - 自动 camelize 响应', () => {
   });
   it('取消已缴费挂号会触发退费并更新状态', async () => {
     const user = userEvent.setup();
-    render(<MemoryRouter><NurseStation /></MemoryRouter>);
+    const { container } = render(<MemoryRouter><NurseStation /></MemoryRouter>);
 
     const row = await screen.findByText('王五');
     expect(row).toBeInTheDocument();
@@ -39,7 +39,8 @@ describe('NurseStation 集成测试 - 自动 camelize 响应', () => {
     const confirmBtn = await screen.findByRole('button', { name: '确认退号' });
     await user.click(confirmBtn);
 
-    await screen.findByText(/挂号费已退回/);
-    expect(await screen.findByText('已退费')).toBeInTheDocument();
+    // 等待退费通知出现
+    const refundMessage = await screen.findByText(/退号成功，挂号费已返回原账号/, {}, { timeout: 3000 });
+    expect(refundMessage).toBeInTheDocument();
   });
 });
