@@ -92,6 +92,13 @@ const AdminPage: React.FC = () => {
               刷新数据
             </button>
             <button 
+              onClick={() => navigate('/admin/audit-logs')}
+              className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:text-green-600 hover:bg-green-50 rounded-xl transition-all font-medium border border-slate-200 bg-white shadow-sm"
+            >
+              <FileText size={18} />
+              审计日志
+            </button>
+            <button 
               onClick={() => { logout(); navigate('/login'); }}
               className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all font-medium border border-slate-200 bg-white shadow-sm"
             >

@@ -6,6 +6,7 @@ import DoctorStation from './pages/DoctorStation';
 import PharmacyStation from './pages/PharmacyStation';
 import Cashier from './pages/Cashier';
 import AdminPage from './pages/Admin';
+import AuditLogsPage from './pages/Admin/AuditLogs';
 import PrivateRoute from './components/PrivateRoute';
 import ToastContainer from './components/ToastContainer';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -54,6 +55,13 @@ function App() {
           <Route path="/admin" element={
             <PrivateRoute>
               <AdminPage />
+            </PrivateRoute>
+          } />
+
+          {/* 审计日志（管理员） */}
+          <Route path="/admin/audit-logs" element={
+            <PrivateRoute>
+              <AuditLogsPage />
             </PrivateRoute>
           } />
 

@@ -450,19 +450,10 @@ const NurseStation: React.FC = () => {
           insuranceType: r.insuranceType ?? r.insurance ?? r.insurance_type ?? '自费',
           deptName: r.deptName ?? r.departmentName ?? r.dept_name ?? '',
           doctorName: r.doctorName ?? r.doctor_name ?? r.doctor ?? '',
-          statusDesc: r.statusDesc ?? '候诊', // RG-01/RG-03: 确保显示"候诊"状态
+          statusDesc: r.statusDesc ?? '候诊', 
           status: r.status ?? 4 // 4=已缴挂号费状态
         });
         let normalized = normalizeReg(res.data);
-        
-        // RG-01: 验证并格式化病历号（如P2024050001）
-        if (normalized.mrn && !/^P\d{10}$/.test(normalized.mrn)) {
-          // 如果病历号格式不正确，尝试格式化
-          const mrnDigits = normalized.mrn.replace(/\D/g, '');
-          if (mrnDigits.length > 0) {
-            normalized = { ...normalized, mrn: `P${mrnDigits.padStart(10, '0')}` };
-          }
-        }
         // 如果后端没有返回 queueNo，基于当前科室生成本地队列号(A/B/C + 3位序号)
         if (!normalized.queueNo) {
           try {
@@ -812,13 +803,10 @@ const NurseStation: React.FC = () => {
 
           <div className="text-sm text-slate-700 space-y-1">
             <div><span className="font-medium">挂号单号：</span>{receipt!.regNo}</div>
-            <div><span className="font-medium">病历号：</span><span className="font-mono text-blue-600">{receipt!.mrn}</span></div>
             <div><span className="font-medium">患者：</span>{receipt!.patientName}</div>
             <div><span className="font-medium">科室：</span>{receipt!.deptName}</div>
             <div><span className="font-medium">医生：</span>{receipt!.doctorName}</div>
             <div><span className="font-medium">排队号：</span>{receipt!.queueNo ?? receipt!.sequence}</div>
-            <div><span className="font-medium">就诊类型：</span><span className={receipt!.type === '复诊' ? 'text-blue-600' : 'text-green-600'}>{receipt!.type ?? '初诊'}</span></div>
-            <div><span className="font-medium">就诊状态：</span><span className="text-yellow-600">{receipt!.statusDesc ?? '候诊'}</span></div>
             <div><span className="font-medium">就诊日期：</span>{receipt!.visitDate ?? receipt!.createTime ?? receipt!.createdAt}</div>
           </div>
 
