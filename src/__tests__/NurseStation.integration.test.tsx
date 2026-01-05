@@ -24,7 +24,7 @@ describe('NurseStation 集成测试 - 自动 camelize 响应', () => {
   });
   it('取消已缴费挂号会触发退费并更新状态', async () => {
     const user = userEvent.setup();
-    const { container } = render(<MemoryRouter><NurseStation /></MemoryRouter>);
+    render(<MemoryRouter><NurseStation /></MemoryRouter>);
 
     const row = await screen.findByText('王五');
     expect(row).toBeInTheDocument();
