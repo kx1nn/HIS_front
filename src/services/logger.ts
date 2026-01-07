@@ -2,6 +2,44 @@
 const isProd = Boolean(import.meta.env && import.meta.env.PROD);
 
 /**
+ * Sentry 配置（可通过环境变量启用）
+ */
+const SENTRY_ENABLED = Boolean(import.meta.env.VITE_SENTRY_ENABLED);
+const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN;
+
+type SentryLevel = 'fatal' | 'error' | 'warning' | 'log' | 'info' | 'debug' | 'critical' | 'warn';
+type SentryLike = {
+    captureException?: (error: unknown, context?: { level?: SentryLevel }) => void;
+    captureMessage?: (message: string, level?: SentryLevel) => void;
+};
+
+/**
+ * 上报错误到 Sentry
+ * 注意：需要先安装 @sentry/browser 并在 main.tsx 中初始化
+ * @param error 错误对象或消息
+ * @param level 错误级别
+ */
+function reportToSentry(error: unknown, level: 'error' | 'warn' = 'error') {
+    if (!SENTRY_ENABLED || !SENTRY_DSN) return;
+
+    // 依赖外部初始化：在 main.tsx 中加载 @sentry/browser 并赋值 window.Sentry
+    const sentry = (globalThis as { Sentry?: SentryLike }).Sentry;
+    if (!sentry || (!sentry.captureException && !sentry.captureMessage)) return;
+
+    try {
+        if (error instanceof Error && sentry.captureException) {
+            sentry.captureException(error, { level });
+        } else if (typeof error === 'string' && sentry.captureMessage) {
+            sentry.captureMessage(error, level);
+        } else if (sentry.captureMessage) {
+            sentry.captureMessage(JSON.stringify(error), level);
+        }
+    } catch {
+        // 忽略上报失败
+    }
+}
+
+/**
  * 日志条目结构
  */
 export interface LogEntry {
@@ -58,9 +96,14 @@ export function clearLogs() {
  */
 export function error(...args: unknown[]) {
     addLog('error', args);
+
+    // 上报首个错误到 Sentry（如果启用）
+    if (args.length > 0) {
+        reportToSentry(args[0], 'error');
+    }
+
     if (isProd) {
-        // TODO: replace with remote error reporting (Sentry, LogRocket, etc.)
-        // For now, still log to console in prod to avoid silent failures.
+        // 生产环境仍然输出到控制台，避免静默失败
         console.error(...args);
     } else {
         console.error(...args);
@@ -70,6 +113,12 @@ export function error(...args: unknown[]) {
 /** 记录警告日志 */
 export function warn(...args: unknown[]) {
     addLog('warn', args);
+
+    // 上报警告到 Sentry（如果启用）
+    if (args.length > 0 && isProd) {
+        reportToSentry(args[0], 'warn');
+    }
+
     if (!isProd) console.warn(...args);
 }
 

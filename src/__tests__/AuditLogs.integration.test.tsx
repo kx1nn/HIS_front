@@ -1,17 +1,17 @@
 /* @vitest-environment jsdom */
-/// <reference types="vitest" />
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import * as api from '../services/api';
+import type { AppState } from '../store/store';
 
 // mock store
-let _mockState: any = { token: null, user: null, notify: vi.fn(), logout: vi.fn() };
+let _mockState: Partial<AppState> = { token: null, user: null, notify: vi.fn(), logout: vi.fn() };
 vi.mock('../store/store', () => {
-  const useStore = ((selector: (s: any) => unknown) => selector(_mockState)) as unknown as (<T>(selector: (s: any) => T) => T) & { getState: () => any; __setMockState?: (s: any) => void };
+  const useStore = ((selector: (s: Partial<AppState>) => unknown) => selector(_mockState)) as unknown as (<T>(selector: (s: Partial<AppState>) => T) => T) & { getState: () => Partial<AppState>; __setMockState?: (s: Partial<AppState>) => void };
   useStore.getState = () => _mockState;
-  useStore.__setMockState = (s: any) => { _mockState = s; };
+  useStore.__setMockState = (s: Partial<AppState>) => { _mockState = s; };
   return { useStore };
 });
 
@@ -19,6 +19,26 @@ vi.mock('../services/api');
 
 import PrivateRoute from '../components/PrivateRoute';
 import AuditLogsPage from '../pages/Admin/AuditLogs';
+
+const originalLocation = window.location;
+const originalOpen = window.open;
+const originalAnchorClick = HTMLAnchorElement.prototype.click;
+
+beforeAll(() => {
+  // mock navigation APIs to silence jsdom warnings
+  Object.defineProperty(window, 'location', {
+    writable: true,
+    value: { ...originalLocation, href: originalLocation.href, assign: vi.fn(), replace: vi.fn() }
+  });
+  window.open = vi.fn();
+  HTMLAnchorElement.prototype.click = vi.fn();
+});
+
+afterAll(() => {
+  Object.defineProperty(window, 'location', { writable: true, value: originalLocation });
+  window.open = originalOpen;
+  HTMLAnchorElement.prototype.click = originalAnchorClick;
+});
 
 const samplePage = {
   totalElements: 1,
@@ -50,13 +70,12 @@ const samplePage = {
 
 describe('AuditLogs page', () => {
   beforeEach(() => {
-    _mockState = { token: 't', user: { role: 'admin' }, notify: vi.fn(), logout: vi.fn() }; 
-    (api.auditApi.search as unknown as vi.Mock).mockResolvedValue(samplePage);
+    _mockState = { token: 't', user: { name: 'admin', dept: 'Admin', role: 'admin' }, notify: vi.fn(), logout: vi.fn() }; 
+    (api.auditApi.search as ReturnType<typeof vi.fn>).mockResolvedValue(samplePage);
     // ensure auth validation passes for PrivateRoute
-    (api.authApi.validate as unknown as vi.Mock).mockResolvedValue(true);
+    (api.authApi.validate as ReturnType<typeof vi.fn>).mockResolvedValue(true);
     // mock createObjectURL to avoid DOM APIs errors
-    // @ts-ignore
-    global.URL.createObjectURL = vi.fn(() => 'blob:url');
+    global.URL.createObjectURL = vi.fn(() => 'blob:url') as unknown as typeof URL.createObjectURL;
   });
 
   afterEach(() => { cleanup(); vi.restoreAllMocks(); });

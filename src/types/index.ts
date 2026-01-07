@@ -36,7 +36,7 @@ export interface Department {
 export interface RegistrationDTO {
   patientName: string;
   idCard: string;
-  gender: number; // 1:女, 0:男
+  gender: number; // 1=男, 0=女
   age: number;
   phone: string;
   deptId: number;
@@ -44,6 +44,7 @@ export interface RegistrationDTO {
   regFee: number;
   insuranceType: string; // 医保类型
   type: string; // 初诊/复诊
+  status?: number; // 可选：挂号状态（0=待就诊），创建时可传 0
   // 以下为分阶段收费扩展字段（可选）
   paymentMethod?: number; // 1=现金,2=银行卡,3=微信,4=支付宝
   transactionNo?: string; // 第三方支付流水号（可选）
@@ -551,9 +552,6 @@ export interface ChargeVO {
   statusDesc: string;
   details: ChargeDetailVO[];
   createdAt: string;
-  // 兼容字段
-  createTime?: string;
-  items?: ChargeDetailVO[];
 }
 
 export interface CreateChargeDTO {

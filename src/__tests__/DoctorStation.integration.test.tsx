@@ -39,7 +39,7 @@ describe('DoctorStation 集成测试 - 候诊列表自动 camelize', () => {
 
     // 保证有登录用户上下文
     useStore.getState().login({ role: 'doctor', name: 'DrTest', dept: '内科', userId: 1, relatedId: 1 });
-    const { container } = render(<MemoryRouter><DoctorStation /></MemoryRouter>);
+    render(<MemoryRouter><DoctorStation /></MemoryRouter>);
 
     // 等待数据加载并查找患者姓名（文本在多个元素中，所以分开匹配）
     const nameElements = await screen.findAllByText((content, element) => {

@@ -187,7 +187,7 @@ const ChargeManagement: React.FC = () => {
                   <span className="font-mono">{c.chargeNo}</span>
                   <span className="font-bold text-slate-700">¥{formatCurrency(c.totalAmount)}</span>
                 </div>
-                <div className="text-[10px] text-slate-400 mt-1">{c.createdAt || c.createTime}</div>
+                <div className="text-[10px] text-slate-400 mt-1">{c.createdAt}</div>
               </div>
             ))
           )}
@@ -219,11 +219,11 @@ const ChargeManagement: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {(selectedCharge.details || selectedCharge.items || []).map((item, idx) => (
+                  {(selectedCharge.details || []).map((item, idx) => (
                     <tr key={idx} className="hover:bg-slate-50">
-                      <td className="px-4 py-3 font-medium text-slate-700">{item.itemName || item.name}</td>
-                      <td className="px-4 py-3 text-slate-500">{item.itemType || item.type}</td>
-                      <td className="px-4 py-3 text-right font-bold text-slate-700">¥{item.itemAmount || item.amount}</td>
+                      <td className="px-4 py-3 font-medium text-slate-700">{item.itemName}</td>
+                      <td className="px-4 py-3 text-slate-500">{item.itemType}</td>
+                      <td className="px-4 py-3 text-right font-bold text-slate-700">¥{item.itemAmount}</td>
                     </tr>
                   ))}
                 </tbody>

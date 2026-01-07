@@ -9,6 +9,7 @@ import { pharmacyApi, isCanceledError } from '../../services/api';
 import { useStore } from '../../store/store';
 import * as logger from '../../services/logger';
 import type { Drug, PrescriptionVO, PrescriptionItemVO, InventoryStatsVO, PharmacistStatisticsDTO } from '../../types';
+import { debounce } from '../../utils/debounce';
 
 /**
  * 药房工作台组件
@@ -21,6 +22,7 @@ const PharmacyStation: React.FC = () => {
   const [drugs, setDrugs] = useState<Drug[]>([]);
   const [prescriptions, setPrescriptions] = useState<PrescriptionVO[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const [fetchStatus, setFetchStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
   const [inventoryStats, setInventoryStats] = useState<InventoryStatsVO | null>(null);
   const [todayStats, setTodayStats] = useState<PharmacistStatisticsDTO | null>(null);
@@ -90,6 +92,9 @@ const PharmacyStation: React.FC = () => {
     return () => { mounted = false; controller.abort(); };
   }, [activeTab, searchTerm, normalizeToArray]);
 
+  // 防抖设置：将原始输入延迟同步到搜索词
+  const debouncedSetSearchTerm = React.useMemo(() => debounce((term: string) => setSearchTerm(term), 300), []);
+
   const handleDispense = async (id: number) => {
     if (!confirm('确认完成发药？库存将自动扣减。')) return;
     
@@ -101,6 +106,12 @@ const PharmacyStation: React.FC = () => {
         const data = await pharmacyApi.getPendingPrescriptions();
         const list = normalizeToArray<PrescriptionVO>(data);
         setPrescriptions(list);
+        // 若当前处于库存或效期视图，刷新药品数据以反映扣减
+        if (activeTab === 'inventory' || activeTab === 'expiry') {
+          const invData = await pharmacyApi.getDrugs(searchTerm);
+          const invList = normalizeToArray<Drug>(invData);
+          setDrugs(invList);
+        }
       } catch {
         // ignore
       }
@@ -195,7 +206,7 @@ const PharmacyStation: React.FC = () => {
   };
 
   return (
-    <div className="flex h-full flex-col bg-slate-50 overflow-hidden">
+    <div className="flex h-full flex-col bg-slate-50 overflow-hidden select-none">
       <div className="bg-white border-b px-6 pt-4 flex justify-between items-center shadow-sm z-10">
         <div className="flex gap-6">
           <button onClick={() => setActiveTab('dashboard')} className={`pb-4 px-2 text-sm font-bold flex items-center gap-2 border-b-2 transition-colors ${activeTab === 'dashboard' ? 'border-purple-600 text-purple-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}><BarChart3 size={18}/> 数据统计</button>
@@ -331,7 +342,7 @@ const PharmacyStation: React.FC = () => {
         {activeTab === 'inventory' && (
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col">
             <div className="p-4 border-b flex justify-between items-center">
-              <div className="relative w-64"><Search size={16} className="absolute left-3 top-2.5 text-slate-400"/><input className="w-full pl-9 p-2 border rounded-lg text-sm focus:border-teal-500 outline-none" placeholder="搜索药品名称/编码..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} onKeyDown={async e => {
+              <div className="relative w-64"><Search size={16} className="absolute left-3 top-2.5 text-slate-400"/><input className="w-full pl-9 p-2 border rounded-lg text-sm focus:border-teal-500 outline-none" placeholder="搜索药品名称/编码..." value={searchInput} onChange={e => { setSearchInput(e.target.value); debouncedSetSearchTerm(e.target.value); }} onKeyDown={async e => {
                           if (e.key === 'Enter') {
                             try {
                               const data = await pharmacyApi.getDrugs(searchTerm);

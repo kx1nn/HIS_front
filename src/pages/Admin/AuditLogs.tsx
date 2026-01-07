@@ -6,7 +6,6 @@ import { FileText, Search, Download, RotateCw } from 'lucide-react';
 
 const AuditLogsPage: React.FC = () => {
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(false);
   const [pageData, setPageData] = useState<PageAuditLogEntity | null>(null);
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(20);
@@ -22,20 +21,17 @@ const AuditLogsPage: React.FC = () => {
   });
 
   const load = async (p = page, s = size) => {
-    setLoading(true);
     try {
       const params: Record<string, unknown> = { page: p, size: s };
       Object.keys(filters).forEach((k) => {
         const v = (filters as Record<string, string>)[k];
         if (v) (params as Record<string, unknown>)[k] = v;
       });
-      const res = await auditApi.search(params as any);
+      const res = await auditApi.search(params);
       setPageData(res);
       setPage(res?.number ?? 0);
     } catch (err) {
       console.error('audit logs load failed', err);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -53,7 +49,7 @@ const AuditLogsPage: React.FC = () => {
   const handleExport = async () => {
     try {
       // 请求较大页，后端应支持导出/或返回全部（开发环境允许）
-      const res = await auditApi.search({ ...filters, page: 0, size: 10000 } as any);
+      const res = await auditApi.search({ ...filters, page: 0, size: 10000 });
       const items = res?.content ?? [];
       const csv = convertToCSV(items);
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -64,7 +60,9 @@ const AuditLogsPage: React.FC = () => {
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+      if (typeof URL.revokeObjectURL === 'function') {
+        URL.revokeObjectURL(url);
+      }
     } catch (err) {
       console.error('export failed', err);
     }
@@ -72,8 +70,8 @@ const AuditLogsPage: React.FC = () => {
 
   const convertToCSV = (items: AuditLogEntity[]) => {
     if (!items || items.length === 0) return '';
-    const headers = ['id','createTime','operatorUsername','operatorId','module','action','auditType','status','executionTime','traceId','requestIp','exceptionType','exceptionMessage','description'];
-    const rows = items.map(it => headers.map(h => JSON.stringify((it as any)[h] ?? '')).join(','));
+    const headers = ['id','createTime','operatorUsername','operatorId','module','action','auditType','status','executionTime','traceId','requestIp','exceptionType','exceptionMessage','description'] as const;
+    const rows = items.map(it => headers.map(h => JSON.stringify(it[h as keyof AuditLogEntity] ?? '')).join(','));
     return `${headers.join(',')}\n${rows.join('\n')}`;
   };
 

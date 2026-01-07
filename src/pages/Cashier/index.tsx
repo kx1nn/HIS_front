@@ -315,7 +315,7 @@ const Cashier: React.FC = () => {
   };
 
   return (
-    <div className="flex h-full flex-col bg-slate-50 overflow-hidden">
+    <div className="flex h-full flex-col bg-slate-50 overflow-hidden select-none">
       {/* 顶部导航 */}
       <div className="bg-white border-b px-6 pt-4 flex justify-between items-center shadow-sm z-10">
         <div className="flex gap-6">

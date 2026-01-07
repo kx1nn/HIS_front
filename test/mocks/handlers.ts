@@ -382,7 +382,39 @@ const handlers: unknown[] = [
             return res(ctx.status(200), ctx.json({ code: 0, data: { content: result, total: result.length } }));
         }),
 
+    // GET /api/pharmacist/prescriptions/pending - 待处理处方列表（用于 msw 警告抑制）
+    isHttp
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ? (http as any).get('/api/pharmacist/prescriptions/pending', () => {
+            return new Response(JSON.stringify({ code: 0, data: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        })
+        : rest.get('/api/pharmacist/prescriptions/pending', (_req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
+            return res(ctx.status(200), ctx.json({ code: 0, data: [] }));
+        }),
 
+
+
+    // POST /api/nurse/registrations - 创建新的挂号记录（模拟后端行为）
+    rest.post('/api/nurse/registrations', async (req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
+        const body = await req.json();
+        const nextId = registrations.length ? Math.max(...registrations.map(r => Number(r.id as number))) + 1 : 1;
+        const newReg: Record<string, unknown> = {
+            id: nextId,
+            reg_no: `REG${String(nextId).padStart(3, '0')}`,
+            patient_name: body.patientName ?? body.patient_name ?? '未知',
+            id_card: body.idCard ?? body.id_card ?? '',
+            phone: body.phone ?? '',
+            gender: typeof body.gender !== 'undefined' ? body.gender : 1,
+            status: typeof body.status !== 'undefined' ? body.status : 0,
+            status_desc: typeof body.status !== 'undefined' ? (body.status === 0 ? '待就诊' : '') : '待就诊',
+            sequence: registrations.length + 1,
+            dept_name: body.deptName ?? '',
+            doctor_name: body.doctorName ?? '',
+            insurance_type: body.insuranceType ?? '自费'
+        };
+        registrations.unshift(newReg);
+        return res(ctx.status(200), ctx.json({ code: 0, data: newReg }));
+    }),
 
     // POST /api/nurse/registrations/today - 返回 snake_case 示例以验证前端自动 camelize
     rest.post('/api/nurse/registrations/today', (_req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
@@ -524,6 +556,34 @@ const handlers: unknown[] = [
         return res(ctx.status(200), ctx.json({ code: 200, data: {}, success: true }));
     }),
 
+    // GET /api/patients (通用查询)
+    rest.get('/api/patients', (_req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
+        return res(ctx.status(200), ctx.json({ code: 0, data: null }));
+    }),
+
+    // 护士工作站患者查询 mock - 统一使用 /api/nurse/patients/search
+    rest.get('/api/nurse/patients/search', (req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
+        const keyword = req.url.searchParams.get('keyword');
+        // 支持身份证号、姓名等查询
+        if (keyword === '110105199001011237' || keyword === '老张') {
+            const p = { main_id: 300, id_card: '110105199001011237', name: '老张', phone: '13100000003', insurance_type: '自费' };
+            return res(ctx.status(200), ctx.json({ code: 0, data: p }));
+        }
+        // 返回空以示未找到
+        return res(ctx.status(200), ctx.json({ code: 0, data: null }));
+    }),
+
+    // 兼容旧的查询接口（可选，如果后端保留）
+    rest.get('/api/patient/check', (req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
+        const idCard = req.url.searchParams.get('idCard');
+        const q = req.url.searchParams.get('q');
+        if (idCard === '110105199001011237' || q === '老张') {
+            const p = { main_id: 300, id_card: '110105199001011237', name: '老张', phone: '13100000003', insurance_type: '自费' };
+            return res(ctx.status(200), ctx.json({ code: 0, data: p }));
+        }
+        return res(ctx.status(200), ctx.json({ code: 0, data: [] }));
+    }),
+
     // GET /api/common/prescriptions/:id
     rest.get('/api/common/prescriptions/:id', (req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
         const id = Number(req.params.id as string);
@@ -535,6 +595,21 @@ const handlers: unknown[] = [
             items: [{ drugName: '阿莫西林', spec: '0.5g', count: 2 }]
         };
         return res(ctx.status(200), ctx.json({ code: 0, data: pres }));
+    }),
+
+    // GET /api/common/prescriptions/by-record/:recordId
+    rest.get('/api/common/prescriptions/by-record/:recordId', (_req: RestRequest, res: ResponseComposition, ctx: RestContext) => {
+        // const recordId = Number(_req.params.recordId as string);
+        // 简单模拟处方列表返回
+        const list = [
+            {
+                id: 101,
+                patientName: '张三',
+                totalAmount: '100.00',
+                items: [{ drugName: '阿莫西林', spec: '0.5g', count: 2 }]
+            }
+        ];
+        return res(ctx.status(200), ctx.json({ code: 0, data: list }));
     })
 ];
 
