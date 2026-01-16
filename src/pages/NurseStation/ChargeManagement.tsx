@@ -3,6 +3,14 @@ import { Search, CreditCard, FileText, CheckCircle, XCircle } from 'lucide-react
 import { chargeApi, logApiError } from '../../services/api';
 import type { ChargeVO } from '../../types';
 
+// helper: format currency from string or number
+const formatCurrency = (v?: string | number | null) => {
+  if (v === null || v === undefined) return '--';
+  const n = typeof v === 'string' ? parseFloat(v) : Number(v);
+  if (!isFinite(n)) return '--';
+  return n.toFixed(2);
+};
+
 /**
  * 护士收费管理页面组件
  * 功能：查询收费单、发起支付、退款与查看发票
@@ -177,9 +185,9 @@ const ChargeManagement: React.FC = () => {
                 </div>
                 <div className="flex justify-between text-xs text-slate-500">
                   <span className="font-mono">{c.chargeNo}</span>
-                  <span className="font-bold text-slate-700">¥{c.totalAmount.toFixed(2)}</span>
+                  <span className="font-bold text-slate-700">¥{formatCurrency(c.totalAmount)}</span>
                 </div>
-                <div className="text-[10px] text-slate-400 mt-1">{c.createdAt || c.createTime}</div>
+                <div className="text-[10px] text-slate-400 mt-1">{c.createdAt}</div>
               </div>
             ))
           )}
@@ -196,7 +204,7 @@ const ChargeManagement: React.FC = () => {
                 <p className="text-sm text-slate-500 mt-1">单号：{selectedCharge.chargeNo}</p>
               </div>
               <div className="text-right">
-                <div className="text-2xl font-bold text-blue-600">¥{selectedCharge.totalAmount.toFixed(2)}</div>
+                <div className="text-2xl font-bold text-blue-600">¥{formatCurrency(selectedCharge.totalAmount)}</div>
                 <div className="text-xs text-slate-500">总金额</div>
               </div>
             </div>
@@ -211,11 +219,11 @@ const ChargeManagement: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {(selectedCharge.details || selectedCharge.items || []).map((item, idx) => (
+                  {(selectedCharge.details || []).map((item, idx) => (
                     <tr key={idx} className="hover:bg-slate-50">
-                      <td className="px-4 py-3 font-medium text-slate-700">{item.itemName || item.name}</td>
-                      <td className="px-4 py-3 text-slate-500">{item.itemType || item.type}</td>
-                      <td className="px-4 py-3 text-right font-bold text-slate-700">¥{item.itemAmount || item.amount}</td>
+                      <td className="px-4 py-3 font-medium text-slate-700">{item.itemName}</td>
+                      <td className="px-4 py-3 text-slate-500">{item.itemType}</td>
+                      <td className="px-4 py-3 text-right font-bold text-slate-700">¥{item.itemAmount}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -260,7 +268,7 @@ const ChargeManagement: React.FC = () => {
             
             <div className="bg-slate-50 p-4 rounded-lg mb-6 text-center">
               <div className="text-sm text-slate-500 mb-1">应收金额</div>
-              <div className="text-3xl font-bold text-blue-600">¥{selectedCharge.totalAmount.toFixed(2)}</div>
+              <div className="text-3xl font-bold text-blue-600">¥{formatCurrency(selectedCharge.totalAmount)}</div>
             </div>
 
             <div className="space-y-3 mb-6">

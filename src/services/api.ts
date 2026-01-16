@@ -3,7 +3,20 @@ import axios, { type AxiosError, type AxiosRequestConfig, type InternalAxiosRequ
 import { getToken, setToken } from '../services/authStorage';
 import { useStore } from '../store/store';
 import * as logger from './logger';
-import type { RegistrationDTO, RegistrationVO, Patient, MedicalRecord, Drug, PrescriptionVO, MedicalRecordVO, MedicineVO, PatientDetailVO, MedicalRecordDTO, CreateChargeDTO, PaymentDTO, RefundRequest, ChargeVO, DailySettlementVO, PageChargeVO } from '../types';
+import { deepCamelize, deepSnake } from '../utils/casing';
+/*
+ * 全局请求/响应字段命名转换说明：
+ * - 目的：统一处理后端响应数据（snake_case 转 camelCase），简化页面逻辑，所有页面使用 camelCase 类型。
+ * - 实现位置：
+ *   - 请求拦截器（requestInterceptor）：仅对 query params 做 deepSnake（转换为 snake_case）
+ *   - 请求体（JSON body）：保持 camelCase 格式不转换（符合后端 DTO 定义）
+ *   - 响应拦截器：对 JSON body 做 deepCamelize（转换为 camelCase）
+ * - 例外：
+ *   - 跳过 FormData、文件上传和 application/x-www-form-urlencoded（因为这些格式常由后端要求并且不可/不应被深度转换）。
+ *   - 跳过非 JSON 响应（如登录接口可能返回 text），保持原始响应以便兼容。
+ * - 测试：项目包含集成测试与请求转换测试（参见 `src/__tests__`），模拟后端返回 snake_case 并验证前端正确 camelize。
+ */
+import type { RegistrationDTO, RegistrationVO, Patient, MedicalRecord, Drug, PrescriptionVO, MedicalRecordVO, MedicineVO, PatientDetailVO, MedicalRecordDTO, CreateChargeDTO, PaymentDTO, RefundRequest, ChargeVO, DailySettlementVO, PageChargeVO, InventoryStatsVO, PharmacistStatisticsDTO, AuditLogEntity, PageAuditLogEntity } from '../types';
 
 // 后端原始 DTO
 export type RawDoctor = {
@@ -34,7 +47,9 @@ const ENV_BASE = (import.meta.env.VITE_API_BASE as string) || '';
 // 开发环境使用相对路径（通过 Vite 代理），生产环境使用完整 URL
 const IS_DEV = import.meta.env.DEV;
 const API_BASE_URL = IS_DEV ? '/api' : (ENV_BASE ? `${ENV_BASE.replace(/\/$/, '')}/api` : '/api');
-const AUTH_BASE_URL = IS_DEV ? '' : (ENV_BASE ? ENV_BASE.replace(/\/$/, '') : '');
+// 登录接口：优先使用环境变量地址（开发时也直接指向后端，临时避免代理问题）
+// 如果想恢复通过 Vite 代理，请将 AUTH_BASE_URL 设置为空字符串并重启 dev server
+const AUTH_BASE_URL = (ENV_BASE ? ENV_BASE.replace(/\/$/, '') : '');
 
 // 业务接口实例 (带 /api 前缀)
 /**
@@ -46,7 +61,6 @@ export const api = axios.create({
   timeout: 5000,
 });
 
-// 认证接口实例 (baseURL为空，接口路径直接用 /auth/login 等，通过代理转发)
 /**
  * 认证专用的 Axios 实例（用于登录/刷新等不带 /api 前缀的认证接口）
  */
@@ -59,14 +73,57 @@ export const authInstance = axios.create({
 const requestInterceptor = (config: InternalAxiosRequestConfig) => {
   try {
     const token = getToken();
+    if (config && !config.headers) config.headers = {} as InternalAxiosRequestConfig['headers'];
+
+    // 注入 JWT Authorization
     if (token && config) {
-      // 确保 headers 对象存在（有些调用传入的 config 可能不包含 headers）
-      if (!config.headers) config.headers = {} as InternalAxiosRequestConfig['headers'];
       (config.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
     }
+
+    // 注入 CSRF token（如果 cookie 中存在 __RequestVerificationToken）
+    try {
+      if (typeof document !== 'undefined' && document.cookie) {
+        const m = document.cookie.match(/(?:^|; )__RequestVerificationToken=([^;]+)/);
+        const csrf = m ? decodeURIComponent(m[1]) : null;
+        if (csrf && config) {
+          const h = config.headers as Record<string, string>;
+          h['RequestVerificationToken'] = csrf;
+          h['X-CSRF-TOKEN'] = csrf;
+          h['X-XSRF-TOKEN'] = csrf;
+          h['X-CSRFToken'] = csrf;
+          // 有些后端还会检查 X-Requested-With
+          h['X-Requested-With'] = 'XMLHttpRequest';
+        }
+
+        // 将当前登录角色注入 header，方便后端或 mock 按角色控制字段可见性
+        try {
+          const role = useStore.getState().user?.role ?? null;
+          if (role && config) (config.headers as Record<string, string>)['x-user-role'] = String(role).toUpperCase();
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // ignore cookie parsing errors
+    }
   } catch {
-    // ignore
+    // ignore overall errors
   }
+
+  // 注意：后端期望 camelCase 格式的请求体（根据 OpenAPI 规范）
+  // 只转换 query params 为 snake_case，请求体保持 camelCase
+  try {
+    // 支持通过 config.__skipSnake 跳过将 query params 转为 snake_case（部分后端需求不一致）
+    // 例如 basicApi.getDoctors 会传入 { __skipSnake: true } 来保证发送 camelCase 的 deptId
+    const skipSnake = (config as AxiosRequestConfig & { __skipSnake?: boolean })?.__skipSnake === true;
+    if (!skipSnake && config.params && typeof config.params === 'object') {
+      (config as AxiosRequestConfig).params = deepSnake(config.params);
+    }
+    // 请求体不做转换，保持 camelCase 格式
+  } catch {
+    // ignore transform errors
+  }
+
   return config;
 };
 
@@ -153,8 +210,27 @@ const responseErrorInterceptor = (instance: AxiosInstance) => (error: AxiosError
   return Promise.reject(error);
 };
 
-api.interceptors.response.use(res => res, responseErrorInterceptor(api));
-authInstance.interceptors.response.use(res => res, responseErrorInterceptor(authInstance));
+api.interceptors.response.use((res) => {
+  try {
+    if (res?.data && typeof res.data === 'object' && !(res.data instanceof ArrayBuffer) && !(res.data instanceof FormData)) {
+      res.data = deepCamelize(res.data);
+    }
+  } catch {
+    // ignore transform errors
+  }
+  return res;
+}, responseErrorInterceptor(api));
+
+authInstance.interceptors.response.use((res) => {
+  try {
+    if (res?.data && typeof res.data === 'object' && !(res.data instanceof ArrayBuffer) && !(res.data instanceof FormData)) {
+      res.data = deepCamelize(res.data);
+    }
+  } catch {
+    // ignore transform errors
+  }
+  return res;
+}, responseErrorInterceptor(authInstance));
 
 /**
  * 从后端响应数据中安全提取 message 字段
@@ -243,12 +319,105 @@ export type LoginVO = { token: string; role?: string; realName?: string; userId?
  */
 export const authApi = {
   login: async (payload: LoginRequest): Promise<{ success: boolean; data?: LoginVO; message?: string }> => {
+    const url = '/auth/login';
+    // 从 cookie 中读取防 CSRF token（如果有）并放入 header / form
+    const getCsrfFromCookie = () => {
+      try {
+        if (typeof document === 'undefined' || !document.cookie) return null;
+        const m = document.cookie.match(/(?:^|; )__RequestVerificationToken=([^;]+)/);
+        return m ? decodeURIComponent(m[1]) : null;
+      } catch {
+        return null;
+      }
+    };
+    const csrfToken = getCsrfFromCookie();
+
+    const csfHeaders = csrfToken ? {
+      RequestVerificationToken: csrfToken,
+      'X-CSRF-TOKEN': csrfToken,
+      'X-XSRF-TOKEN': csrfToken,
+      'X-CSRFToken': csrfToken
+    } : {};
+
+    const jsonPayload = csrfToken ? { ...payload, __RequestVerificationToken: csrfToken } : payload;
+    const jsonCfg = { headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...csfHeaders }, responseType: 'text' as const };
     try {
-      const res = await authInstance.post('/auth/login', payload);
-      const norm = normalizeResponse<LoginVO>(res?.data);
-      return { success: norm.success, data: norm.data, message: norm.message };
+      console.debug('[authApi.login] request', { baseURL: authInstance.defaults.baseURL, url, payload: jsonPayload, jsonCfg });
+      const res = await authInstance.post(url, jsonPayload, jsonCfg);
+      console.debug('[authApi.login] raw response text', { status: res?.status, text: res?.data });
+      // 尝试把响应解析为 JSON（某些后端会返回 JSON 字符串）
+      let parsed: unknown = undefined;
+      try {
+        parsed = JSON.parse(res?.data as string);
+      } catch (parseErr) {
+        console.warn('[authApi.login] response not JSON', parseErr);
+      }
+      const norm = normalizeResponse<LoginVO>(parsed ?? res?.data);
+
+      // 兼容后端可能的嵌套：data.data.token
+      const raw = (norm.data ?? (parsed ?? res?.data)) as Record<string, unknown> | undefined;
+      const inner = (raw && typeof raw === 'object' ? (raw.data ?? raw) : raw) as Record<string, unknown> | undefined;
+      const token = (inner && ((inner as Record<string, unknown>).token ?? ((inner as Record<string, Record<string, unknown>>).data && (inner as Record<string, Record<string, unknown>>).data.token))) ?? undefined;
+
+      const loginVo: LoginVO = {
+        token: (token as string) ?? ((inner as Record<string, unknown>)?.token as string) ?? '',
+        role: ((inner as Record<string, unknown>)?.role as string) ?? undefined,
+        realName: ((inner as Record<string, unknown>)?.realName as string) ?? undefined,
+        userId: ((inner as Record<string, unknown>)?.userId as number) ?? undefined,
+        relatedId: ((inner as Record<string, unknown>)?.relatedId as number) ?? undefined
+      };
+
+      if (loginVo.token) {
+        try { setToken(loginVo.token); } catch (e) { console.warn('Failed to set token:', e); }
+        try { useStore.getState().setToken(loginVo.token); } catch (e) { console.warn('Failed to set store token:', e); }
+      }
+
+      return { success: norm.success, data: loginVo, message: norm.message };
     } catch (err: unknown) {
       const e = err as AxiosError;
+      console.error('[authApi.login] error', e, e?.config, e?.response?.status, e?.response?.data);
+
+      // 如果后端返回403，尝试使用form-urlencoded作为兼容（同样以text方式接收原始响应）
+      if (e.response?.status === 403) {
+        try {
+          const formData = new URLSearchParams();
+          formData.append('username', payload.username);
+          formData.append('password', payload.password);
+          if (csrfToken) formData.append('__RequestVerificationToken', csrfToken);
+          const formCfg = { headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json', ...(csrfToken ? { 'RequestVerificationToken': csrfToken } : {}) }, responseType: 'text' as const };
+          console.debug('[authApi.login] retry with form', { baseURL: authInstance.defaults.baseURL, url, formData, formCfg });
+          const res2 = await authInstance.post(url, formData, formCfg);
+          console.debug('[authApi.login] retry raw response text', { status: res2?.status, text: res2?.data });
+          let parsed2: unknown = undefined;
+          try { parsed2 = JSON.parse(res2?.data as string); } catch (parseErr) { console.warn('[authApi.login] form response not JSON', parseErr); }
+          const norm = normalizeResponse<LoginVO>(parsed2 ?? res2?.data);
+
+          // 兼容嵌套 data.data.token
+          const raw = (norm.data ?? (parsed2 ?? res2?.data)) as Record<string, unknown> | undefined;
+          const inner = (raw && typeof raw === 'object' ? (raw.data ?? raw) : raw) as Record<string, unknown> | undefined;
+          const token = (inner && ((inner as Record<string, unknown>).token ?? ((inner as Record<string, Record<string, unknown>>).data && (inner as Record<string, Record<string, unknown>>).data.token))) ?? undefined;
+
+          const loginVo: LoginVO = {
+            token: (token as string) ?? ((inner as Record<string, unknown>)?.token as string) ?? '',
+            role: ((inner as Record<string, unknown>)?.role as string) ?? undefined,
+            realName: ((inner as Record<string, unknown>)?.realName as string) ?? undefined,
+            userId: ((inner as Record<string, unknown>)?.userId as number) ?? undefined,
+            relatedId: ((inner as Record<string, unknown>)?.relatedId as number) ?? undefined
+          };
+
+          if (loginVo.token) {
+            try { setToken(loginVo.token); } catch (e) { console.warn('Failed to set token:', e); }
+            try { useStore.getState().setToken(loginVo.token); } catch (e) { console.warn('Failed to set store token:', e); }
+          }
+
+          return { success: norm.success, data: loginVo, message: norm.message };
+        } catch (formErr: unknown) {
+          console.error('[authApi.login] form fallback error', formErr);
+          logApiError('authApi.login.fallback', formErr);
+        }
+      }
+
+      // 如果不是403或回退仍失败，记录并返回友好信息
       logApiError('authApi.login', e);
       return { success: false, message: mapStatusToMessage(e) || '网络请求失败' };
     }
@@ -287,15 +456,43 @@ export const registrationApi = {
   // 1. 提交挂号接口
   create: async (data: RegistrationDTO): Promise<{ success: boolean; data?: RegistrationVO; message?: string }> => {
     try {
+      // 发送前规范化字段：确保gender为number类型
+      const original = { ...data, gender: Number(data.gender) } as RegistrationDTO;
+      const payload = deepSnake(original);
+
       // 新后端路径优先：/nurse/registrations
+      // 生成同时包含 snake_case 与 camelCase 字段的合并 payload，便于后端兼容
+      const merged: Record<string, unknown> = { ...payload };
+      const originalRecord = original as unknown as Record<string, unknown>;
+      Object.keys(original).forEach((k) => {
+        merged[k] = originalRecord[k];
+      });
+
       try {
-        const res = await api.post('/nurse/registrations', data);
+        const res = await api.post('/nurse/registrations', merged);
         const norm = normalizeResponse<RegistrationVO>(res?.data);
         return { success: norm.success, data: norm.data, message: norm.message };
       } catch (e) {
-        logger.debug('registrationApi.create: new endpoint failed, fallback to /registrations', e);
+        const ae = e as AxiosError | undefined;
+        const msg = extractMessageFromData(ae?.response?.data) || '';
+        logger.debug('registrationApi.create: new endpoint failed', { status: ae?.response?.status, message: msg, error: e, payload: merged });
+
+        // 若后端返回 400 且提示患者姓名相关字段为空，尝试用原始 camelCase payload 再次提交以兼容后端字段命名差异
+        if (ae?.response?.status === 400 && /姓名|patient name|patientName/i.test(msg)) {
+          logger.debug('registrationApi.create: retrying with camelCase payload due to validation message', msg, { payload: original });
+          try {
+            const res2 = await api.post('/nurse/registrations', original);
+            const norm2 = normalizeResponse<RegistrationVO>(res2?.data);
+            return { success: norm2.success, data: norm2.data, message: norm2.message };
+          } catch (e2) {
+            logger.debug('registrationApi.create: retry with camelCase failed', e2, { payload: original });
+            // fallthrough to try legacy endpoint
+          }
+        }
       }
-      const res = await api.post('/registrations', data);
+
+      // 最后回退到历史路径 /registrations（保持与后端兼容）
+      const res = await api.post('/registrations', merged);
       const norm = normalizeResponse<RegistrationVO>(res?.data);
       return { success: norm.success, data: norm.data, message: norm.message };
     } catch (err: unknown) {
@@ -304,6 +501,7 @@ export const registrationApi = {
       return { success: false, message: mapStatusToMessage(e) || '网络请求失败' };
     }
   },
+
 
   // 2. 获取今日挂号列表（护士工作台）
   getList: async (params?: { visitDate?: string; departmentId?: number; status?: number; visitType?: number; keyword?: string }, config?: AxiosRequestConfig): Promise<RegistrationVO[]> => {
@@ -341,14 +539,11 @@ export const registrationApi = {
   },
 
   // 3. 根据身份证或通用查询查询老患者
-  // 参数可以是身份证号/手机号/姓名，函数会智能选择查询参数名
+  // 参数可以是身份证号/手机号/姓名，使用护士工作站患者查询接口
   checkPatient: async (q: string, config?: AxiosRequestConfig): Promise<Patient | Patient[] | null> => {
     try {
-      const isIdCard = typeof q === 'string' && q.trim().length >= 15 && /^[0-9Xx]+$/.test(q.replace(/\s+/g, ''));
-      const url = isIdCard
-        ? `/patient/check?idCard=${encodeURIComponent(q)}`
-        : `/patient/check?q=${encodeURIComponent(q)}`;
-      const res = await api.get(url, { ...(config ?? {}) });
+      // 使用护士工作站统一的患者查询接口，参数名为 keyword
+      const res = await api.get(`/nurse/patients/search?keyword=${encodeURIComponent(q)}`, { ...(config ?? {}) });
       const norm = normalizeResponse<Patient | Patient[] | null>(res?.data);
       return norm.data ?? null;
     } catch (err: unknown) {
@@ -363,7 +558,7 @@ export const registrationApi = {
       // 后端要求 application/x-www-form-urlencoded，使用 URLSearchParams
       const body = new URLSearchParams();
       if (reason) body.append('reason', reason);
-      const res = await api.put(`/registrations/${id}/cancel`, body.toString(), {
+      const res = await api.put(`/nurse/registrations/${id}/cancel`, body.toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
       const norm = normalizeResponse<unknown>(res?.data);
@@ -378,7 +573,7 @@ export const registrationApi = {
   refund: async (id: number): Promise<{ success: boolean; message?: string }> => {
     try {
       // 后端要求 application/x-www-form-urlencoded，即使无 body，也传空字符串
-      const res = await api.put(`/registrations/${id}/refund`, '', {
+      const res = await api.put(`/nurse/registrations/${id}/refund`, '', {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
       const norm = normalizeResponse<unknown>(res?.data);
@@ -388,6 +583,19 @@ export const registrationApi = {
       logApiError('registrationApi.refund', e);
       return { success: false, message: mapStatusToMessage(e) || '退费失败' };
     }
+  },
+
+  // 6. 护士站收取挂号费
+  payRegistrationFee: async (id: number, paymentData: PaymentDTO): Promise<{ success: boolean; data?: ChargeVO; message?: string }> => {
+    try {
+      const res = await api.post(`/nurse/registrations/${id}/pay`, paymentData);
+      const norm = normalizeResponse<ChargeVO>(res?.data);
+      return { success: norm.success, data: norm.data, message: norm.message };
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('registrationApi.payRegistrationFee', e);
+      return { success: false, message: mapStatusToMessage(e) || '收费失败' };
+    }
   }
 };
 
@@ -396,23 +604,13 @@ export const registrationApi = {
  * 患者相关 API：查找、检索与创建
  */
 export const patientApi = {
-  // 根据身份证查找患者（优先从 /patients 或 /patient/list 等接口获取）
+  // 根据身份证查找患者（使用护士工作站患者查询接口）
   findByIdCard: async (idCard: string, config?: AxiosRequestConfig): Promise<Patient | Patient[] | null> => {
     try {
-      // 尝试常见路径，后端可能在不同路由下实现，优先使用 /patients
-      const tryUrls = [`/patients?idCard=${encodeURIComponent(idCard)}`, `/patient/check?idCard=${encodeURIComponent(idCard)}`];
-      for (const url of tryUrls) {
-        try {
-          const res = await api.get(url, { ...(config ?? {}) });
-          const norm = normalizeResponse<Patient | Patient[] | null>(res?.data);
-          if (norm.data) return norm.data;
-          continue;
-        } catch (e) {
-          // 单个路径失败继续尝试下一个
-          logger.debug('[patientApi] try url failed', url, e);
-        }
-      }
-      return null;
+      // 使用护士工作站统一的患者查询接口，参数名为 keyword
+      const res = await api.get(`/nurse/patients/search?keyword=${encodeURIComponent(idCard)}`, { ...(config ?? {}) });
+      const norm = normalizeResponse<Patient | Patient[] | null>(res?.data);
+      return norm.data ?? null;
     } catch (err) {
       logApiError('patientApi.findByIdCard', err);
       return null;
@@ -422,15 +620,14 @@ export const patientApi = {
   // 通用查询（姓名/手机号）
   search: async (q: string): Promise<Patient[] | null> => {
     try {
-      const res = await api.get(`/patients/search?q=${encodeURIComponent(q)}`);
+      const res = await api.get(`/nurse/patients/search?keyword=${encodeURIComponent(q)}`);
       const norm = normalizeResponse<Patient[]>(res?.data);
       return norm.data || null;
     } catch (err) {
       logApiError('patientApi.search', err);
       return null;
     }
-  }
-  ,
+  },
   // 创建或更新患者（写入患者表）
   create: async (data: Partial<Patient>): Promise<Patient | null> => {
     try {
@@ -446,16 +643,47 @@ export const patientApi = {
 
 // 基础数据 API：医生与科室
 export const basicApi = {
-  getDoctors: async (deptId?: number, config?: AxiosRequestConfig): Promise<RawDoctor[]> => {
+  getDoctors: async (deptId?: number, config?: AxiosRequestConfig & { __skipSnake?: boolean }): Promise<RawDoctor[]> => {
     try {
+      // 如果没有传 deptId，则直接返回空数组（避免向后端发出缺少参数的请求）
+      if (typeof deptId !== 'number' || Number.isNaN(deptId)) {
+        logger.warn('basicApi.getDoctors called without valid deptId', { deptId });
+        return [];
+      }
       // 使用新的公共接口：/common/data/doctors
-      const url = deptId ? `/common/data/doctors?deptId=${encodeURIComponent(String(deptId))}` : '/common/data/doctors';
-      const res = await api.get(url, { ...(config ?? {}) });
-      const norm = normalizeResponse<RawDoctor[]>(res?.data);
-      if (norm.data) return norm.data;
-      return Array.isArray(res?.data) ? (res?.data as RawDoctor[]) : [];
+      const params = { deptId };
+      logger.debug('basicApi.getDoctors request', { params });
+      // 首次尝试：发送 camelCase 的 deptId（skip snake conversion）
+      let res = await api.get('/common/data/doctors', { params, __skipSnake: true, ...(config ?? {}) });
+      logger.debug('basicApi.getDoctors response', res?.status, res?.data);
+      let norm = normalizeResponse<RawDoctor[]>(res?.data);
+      if (norm.data && norm.data.length > 0) return norm.data;
+
+      // 兼容部分后端使用 snake_case 查询参数 dept_id 的情况：尝试回退一次
+      try {
+        const fallbackParams = { dept_id: deptId } as Record<string, unknown>;
+        logger.warn('basicApi.getDoctors: empty result, retrying with fallback param', { fallbackParams });
+        // fallback: allow requestInterceptor to convert params to snake_case
+        res = await api.get('/common/data/doctors', { params: fallbackParams, ...(config ?? {}) });
+        logger.debug('basicApi.getDoctors fallback response', res?.status, res?.data);
+        norm = normalizeResponse<RawDoctor[]>(res?.data);
+        if (norm.data) return norm.data;
+        return Array.isArray(res?.data) ? (res?.data as RawDoctor[]) : [];
+      } catch (fallbackErr) {
+        logger.error('basicApi.getDoctors fallback failed:', fallbackErr);
+        return [];
+      }
     } catch (err: unknown) {
       const e = err as AxiosError;
+      // 如果请求被取消（比如组件卸载或 abort），直接返回空数组并静默处理
+      if (isCanceledError(e)) return [];
+      // 如果没有 response（通常为网络/代理超时或连接错误），降为 debug 避免控制台噪音
+      if (!e?.response) {
+        logger.debug('basicApi.getDoctors network/error without response:', e?.message ?? e);
+        return [];
+      }
+      // 否则记录详细错误以便定位（如 400/403），并上报
+      logger.error('basicApi.getDoctors failed response:', e.response.status, e.response.data);
       logApiError('basicApi.getDoctors', e);
       return [];
     }
@@ -483,20 +711,88 @@ export const pharmacyApi = {
   // 查询库存（支持关键字/低库存筛选）
   getDrugs: async (keyword?: string, lowStock?: boolean, config?: AxiosRequestConfig): Promise<Drug[]> => {
     try {
-      const res = await api.get('/common/medicines/search', { ...(config ?? {}), params: { keyword, lowStock } });
-      const norm = normalizeResponse<Drug[]>(res?.data);
-      if (norm.data) return norm.data;
-      return Array.isArray(res?.data) ? (res?.data as Drug[]) : [];
+      const params: Record<string, unknown> = {};
+      if (keyword) params.keyword = keyword;
+      if (lowStock) params.stockStatus = 'LOW';
+      const res = await api.get('/common/medicines', { ...(config ?? {}), params });
+      const norm = normalizeResponse<{ content?: Drug[] } | Drug[]>(res?.data);
+      const data = norm.data as unknown;
+      const normalizeDrug = (d: unknown): Drug => {
+        const src = (d as Record<string, unknown>) ?? {};
+        const out: Record<string, unknown> = { ...src };
+        const priceVal = (src['price'] ?? src['retailPrice'] ?? src['retail_price']) as string | number | undefined;
+        out['price'] = priceVal !== undefined ? String(priceVal) : '0';
+        out['retailPrice'] = src['retailPrice'] ?? src['retail_price'] ?? out['price'];
+        const stockVal = (src['stock'] ?? src['stockQuantity'] ?? src['stock_quantity']) as number | undefined;
+        out['stock'] = typeof stockVal === 'number' ? stockVal : Number(stockVal ?? 0);
+        out['stockQuantity'] = src['stockQuantity'] ?? src['stock_quantity'] ?? out['stock'];
+
+        return {
+          id: Number(src['mainId'] ?? src['id'] ?? src['main_id'] ?? 0),
+          medicineCode: String(src['medicineCode'] ?? src['medicine_code'] ?? ''),
+          name: String(src['name'] ?? ''),
+          commonName: (src['genericName'] ?? src['commonName'] ?? null) as string | null,
+          spec: (src['specification'] ?? src['spec'] ?? null) as string | null,
+          unit: (src['unit'] ?? null) as string | null,
+          price: String(out['price']),
+          purchasePrice: (src['purchasePrice'] ?? src['purchase_price'] ?? null) as string | null,
+          profitMargin: (src['profitMargin'] ?? src['profit_margin']) as number | null,
+          stock: Number(out['stock'] as number),
+          minStock: (src['minStock'] ?? src['min_stock'] ?? null) as number | null,
+          maxStock: (src['maxStock'] ?? src['max_stock'] ?? null) as number | null,
+          manufacturer: (src['manufacturer'] ?? null) as string | null,
+          category: (src['category'] ?? null) as string | null,
+          expiryWarningDays: (src['expiryWarningDays'] ?? src['expiry_warning_days'] ?? null) as number | null,
+          isPrescription: Number(src['isPrescription'] ?? src['is_prescription'] ?? 0),
+          status: Number(src['status'] ?? 0),
+          is_deleted: (src['is_deleted'] ?? null) as number | null,
+          approvalNo: (src['approvalNo'] ?? src['approval_no'] ?? null) as string | null,
+          storageCondition: (src['storageCondition'] ?? src['storage_condition'] ?? null) as string | null,
+          version: (src['version'] ?? null) as number | null,
+        } as Drug;
+      };
+      if (data && typeof data === 'object' && 'content' in (data as Record<string, unknown>)) {
+        const content = (data as Record<string, unknown>)['content'];
+        if (Array.isArray(content)) return content.map(normalizeDrug) as Drug[];
+      }
+      if (Array.isArray(res?.data)) return (res?.data as unknown as Record<string, unknown>[]).map(normalizeDrug) as Drug[];
+      if (Array.isArray(data)) return (data as Record<string, unknown>[]).map(normalizeDrug) as Drug[];
+      return [] as Drug[];
     } catch (err) {
       logApiError('pharmacyApi.getDrugs', err as AxiosError);
       return [];
     }
   },
 
-  // 获取待发药处方列表
+  // 查询处方详情
+  getPrescriptionDetail: async (id: number, config?: AxiosRequestConfig): Promise<PrescriptionVO | null> => {
+    try {
+      const res = await api.get(`/common/prescriptions/${encodeURIComponent(String(id))}`, { ...(config ?? {}) });
+      const norm = normalizeResponse<PrescriptionVO>(res?.data);
+      return norm.data ?? null;
+    } catch (err) {
+      logApiError('pharmacyApi.getPrescriptionDetail', err as AxiosError);
+      return null;
+    }
+  },
+
+  // 查询病历的处方列表
+  getPrescriptionsByRecord: async (recordId: number, config?: AxiosRequestConfig): Promise<PrescriptionVO[]> => {
+    try {
+      const res = await api.get(`/common/prescriptions/by-record/${encodeURIComponent(String(recordId))}`, { ...(config ?? {}) });
+      const norm = normalizeResponse<PrescriptionVO[]>(res?.data);
+      if (norm.data) return norm.data;
+      return Array.isArray(res?.data) ? (res?.data as PrescriptionVO[]) : [];
+    } catch (err) {
+      logApiError('pharmacyApi.getPrescriptionsByRecord', err as AxiosError);
+      return [];
+    }
+  },
+
+  // 获取待发药处方列表（已审核但未发药）
   getPendingPrescriptions: async (config?: AxiosRequestConfig): Promise<PrescriptionVO[]> => {
     try {
-      const res = await api.get('/medicine/pending', { ...(config ?? {}) });
+      const res = await api.get('/pharmacist/prescriptions/pending', { ...(config ?? {}) });
       const norm = normalizeResponse<PrescriptionVO[]>(res?.data);
       if (norm.data) return norm.data;
       return Array.isArray(res?.data) ? (res?.data as PrescriptionVO[]) : [];
@@ -506,14 +802,84 @@ export const pharmacyApi = {
     }
   },
 
-  // 根据处方ID发药（扣减库存）
+  // 根据处方ID发药（自动扣减库存）
   dispense: async (prescriptionId: number): Promise<boolean> => {
     try {
-      const res = await api.post('/medicine/dispense', null, { params: { prescriptionId } });
+      const res = await api.post(`/pharmacist/prescriptions/${encodeURIComponent(String(prescriptionId))}/dispense`);
       const norm = normalizeResponse<unknown>(res?.data);
-      return norm.success;
+      const rawData = res?.data as { code?: number } | undefined;
+      return norm.success || (rawData?.code === 200);
     } catch (err) {
       logApiError('pharmacyApi.dispense', err);
+      return false;
+    }
+  },
+
+  // 退药操作（根据处方ID，自动归还库存）
+  returnMedicine: async (prescriptionId: number, reason: string): Promise<boolean> => {
+    try {
+      const res = await api.post(`/pharmacist/prescriptions/${encodeURIComponent(String(prescriptionId))}/return`, null, {
+        params: { reason }
+      });
+      const norm = normalizeResponse<unknown>(res?.data);
+      const rawData = res?.data as { code?: number } | undefined;
+      return norm.success || (rawData?.code === 200);
+    } catch (err) {
+      logApiError('pharmacyApi.returnMedicine', err);
+      return false;
+    }
+  },
+
+  // 审核处方
+  reviewPrescription: async (prescriptionId: number, reviewDoctorId: number, remark?: string): Promise<boolean> => {
+    try {
+      const params: Record<string, unknown> = { reviewDoctorId };
+      if (remark) params.remark = remark;
+      const res = await api.post(`/pharmacist/prescriptions/${encodeURIComponent(String(prescriptionId))}/review`, null, { params });
+      const norm = normalizeResponse<unknown>(res?.data);
+      const rawData = res?.data as { code?: number } | undefined;
+      return norm.success || (rawData?.code === 200);
+    } catch (err) {
+      logApiError('pharmacyApi.reviewPrescription', err);
+      return false;
+    }
+  },
+
+  // 今日发药统计
+  getTodayStatistics: async (): Promise<PharmacistStatisticsDTO | null> => {
+    try {
+      const res = await api.get('/pharmacist/prescriptions/statistics/today');
+      const norm = normalizeResponse<PharmacistStatisticsDTO>(res?.data);
+      return norm.data ?? null;
+    } catch (err) {
+      logApiError('pharmacyApi.getTodayStatistics', err);
+      return null;
+    }
+  },
+
+  // 获取库存统计数据（用于仪表盘）
+  getInventoryStats: async (): Promise<InventoryStatsVO | null> => {
+    try {
+      const res = await api.get('/pharmacist/medicines/inventory-stats');
+      const norm = normalizeResponse<InventoryStatsVO>(res?.data);
+      return norm.data ?? null;
+    } catch (err) {
+      logApiError('pharmacyApi.getInventoryStats', err);
+      return null;
+    }
+  },
+
+  // 更新药品库存（手动调整：入库/出库）
+  updateStock: async (medicineId: number, quantity: number, reason: string): Promise<boolean> => {
+    try {
+      const res = await api.put(`/pharmacist/medicines/${encodeURIComponent(String(medicineId))}/stock`, null, {
+        params: { quantity, reason }
+      });
+      const norm = normalizeResponse<unknown>(res?.data);
+      const rawData = res?.data as { code?: number } | undefined;
+      return norm.success || (rawData?.code === 200);
+    } catch (err) {
+      logApiError('pharmacyApi.updateStock', err);
       return false;
     }
   },
@@ -523,10 +889,40 @@ export const pharmacyApi = {
     try {
       const res = await api.get(`/common/medicines/${encodeURIComponent(String(id))}`, { ...(config ?? {}) });
       const norm = normalizeResponse<Drug>(res?.data);
-      if (norm.data) return norm.data;
-      if (res?.data && typeof res?.data === 'object') {
-        const obj = res?.data as Record<string, unknown>;
-        return (obj['data'] as Drug) ?? (res?.data as Drug) ?? null;
+      const src = (norm.data ?? res?.data) as Record<string, unknown> | undefined;
+      if (src && typeof src === 'object') {
+        const o = (src['data'] ?? src) as Record<string, unknown>;
+        const priceVal = (o['price'] ?? o['retailPrice'] ?? o['retail_price']) as string | number | undefined;
+        const stockVal = (o['stock'] ?? o['stockQuantity'] ?? o['stock_quantity']) as number | undefined;
+
+        const specVal = (o['specification'] ?? o['spec'] ?? null) as string | null;
+        const unitVal = (o['unit'] ?? null) as string | null;
+        const priceStr = String(priceVal ?? '0');
+        const stockNumber = typeof stockVal === 'number' ? stockVal : Number(stockVal ?? 0);
+        const drug: Drug = {
+          id: Number(o['mainId'] ?? o['id'] ?? o['main_id'] ?? 0),
+          medicineCode: String(o['medicineCode'] ?? o['medicine_code'] ?? ''),
+          name: String(o['name'] ?? ''),
+          commonName: (o['genericName'] ?? o['commonName'] ?? null) as string | null,
+          spec: specVal,
+          unit: unitVal,
+          price: priceStr,
+          purchasePrice: (o['purchasePrice'] ?? o['purchase_price'] ?? null) as string | null,
+          profitMargin: (o['profitMargin'] ?? o['profit_margin'] ?? null) as number | null,
+          stock: stockNumber,
+          minStock: (o['minStock'] ?? o['min_stock'] ?? null) as number | null,
+          maxStock: (o['maxStock'] ?? o['max_stock'] ?? null) as number | null,
+          manufacturer: (o['manufacturer'] ?? null) as string | null,
+          category: (o['category'] ?? null) as string | null,
+          expiryWarningDays: null,
+          isPrescription: (typeof o['isPrescription'] !== 'undefined' ? Number(o['isPrescription']) : (typeof o['is_prescription'] !== 'undefined' ? Number(o['is_prescription']) : 0)),
+          status: Number(o['status'] ?? 0),
+          is_deleted: null,
+          approvalNo: (o['approvalNo'] ?? o['approval_no'] ?? null) as string | null,
+          storageCondition: (o['storageCondition'] ?? o['storage_condition'] ?? null) as string | null,
+          version: (o['version'] ?? null) as number | null,
+        };
+        return drug;
       }
       return null;
     } catch (err) {
@@ -535,34 +931,11 @@ export const pharmacyApi = {
     }
   },
 
-  // 退药操作（根据发药记录ID）
-  returnMedicine: async (dispenseId: number, reason: string): Promise<boolean> => {
-    try {
-      const res = await api.post('/medicine/return', null, { params: { dispenseId, reason } });
-      const norm = normalizeResponse<unknown>(res?.data);
-      return norm.success;
-    } catch (err) {
-      logApiError('pharmacyApi.returnMedicine', err);
-      return false;
-    }
-  },
-
-  // 今日发药统计
-  getTodayStatistics: async (): Promise<unknown | null> => {
-    try {
-      const res = await api.get('/medicine/statistics/today');
-      const norm = normalizeResponse<unknown>(res?.data);
-      return norm.data ?? null;
-    } catch (err) {
-      logApiError('pharmacyApi.getTodayStatistics', err);
-      return null;
-    }
-  },
-
-  // 医生/系统推送处方到药房
+  // 医生/系统推送处方到药房（实际使用医生工作台的处方创建接口）
   sendPrescription: async (rx: PrescriptionVO): Promise<PrescriptionVO | null> => {
     try {
-      const res = await api.post('/prescriptions', rx);
+      // 调用医生工作台的处方创建接口而非此前错误的 /prescriptions 端点
+      const res = await api.post('/doctor/prescriptions/create', rx);
       const norm = normalizeResponse<PrescriptionVO>(res?.data);
       return norm.data ?? null;
     } catch (err) {
@@ -576,10 +949,34 @@ export const pharmacyApi = {
     try {
       const res = await api.get(`/common/medicines/${encodeURIComponent(String(id))}`, { ...(config ?? {}) });
       const norm = normalizeResponse<MedicineVO>(res?.data);
-      if (norm.data) return norm.data;
-      if (res?.data && typeof res?.data === 'object') {
-        const obj = res?.data as Record<string, unknown>;
-        return (obj['data'] as MedicineVO) ?? (res?.data as MedicineVO) ?? null;
+      const src = (norm.data ?? res?.data) as Record<string, unknown> | undefined;
+      if (src && typeof src === 'object') {
+        const o = (src['data'] ?? src) as Record<string, unknown>;
+        const priceVal = (o['price'] ?? o['retailPrice'] ?? o['retail_price']) as string | number | undefined;
+        const stockVal = (o['stock'] ?? o['stockQuantity'] ?? o['stock_quantity']) as number | undefined;
+        const out: MedicineVO = {
+          mainId: Number(o['mainId'] ?? o['id'] ?? o['main_id'] ?? 0),
+          medicineCode: String(o['medicineCode'] ?? o['medicine_code'] ?? ''),
+          name: String(o['name'] ?? ''),
+          genericName: (o['genericName'] ?? o['generic_name'] ?? null) as string | null,
+          retailPrice: String(priceVal ?? '0'),
+          purchasePrice: (o['purchasePrice'] ?? o['purchase_price'] ?? null) as string | null,
+          profitMargin: typeof o['profitMargin'] === 'number' ? (o['profitMargin'] as number) : (typeof o['profit_margin'] === 'number' ? (o['profit_margin'] as number) : null),
+          stockQuantity: typeof stockVal === 'number' ? stockVal : Number(stockVal ?? 0),
+          minStock: typeof o['minStock'] === 'number' ? (o['minStock'] as number) : (typeof o['min_stock'] === 'number' ? (o['min_stock'] as number) : null),
+          maxStock: typeof o['maxStock'] === 'number' ? (o['maxStock'] as number) : (typeof o['max_stock'] === 'number' ? (o['max_stock'] as number) : null),
+          status: Number(o['status'] ?? 0),
+          specification: (o['specification'] ?? o['spec'] ?? null) as string | null,
+          unit: (o['unit'] ?? null) as string | null,
+          dosageForm: (o['dosageForm'] ?? o['dosage_form'] ?? null) as string | null,
+          manufacturer: (o['manufacturer'] ?? null) as string | null,
+          category: (o['category'] ?? null) as string | null,
+          isPrescription: Number(o['isPrescription'] ?? o['is_prescription'] ?? 0),
+          approvalNo: (o['approvalNo'] ?? o['approval_no'] ?? null) as string | null,
+          storageCondition: (o['storageCondition'] ?? o['storage_condition'] ?? null) as string | null,
+          version: (o['version'] ?? null) as number | null,
+        };
+        return out;
       }
       return null;
     } catch (err) {
@@ -591,11 +988,17 @@ export const pharmacyApi = {
   // 搜索药品（根据关键字模糊搜索）
   searchMedicines: async (keyword?: string, config?: AxiosRequestConfig): Promise<MedicineVO[]> => {
     try {
-      const params = keyword ? { keyword } : {};
-      const res = await api.get('/common/medicines/search', { ...(config ?? {}), params });
-      const norm = normalizeResponse<MedicineVO[]>(res?.data);
-      if (norm.data) return norm.data;
-      return Array.isArray(res?.data) ? (res?.data as MedicineVO[]) : [];
+      const params: Record<string, unknown> = keyword ? { keyword } : {};
+      const res = await api.get('/common/medicines', { ...(config ?? {}), params });
+      const norm = normalizeResponse<{ content?: MedicineVO[] } | MedicineVO[]>(res?.data);
+      const data = norm.data as unknown;
+      if (data && typeof data === 'object' && 'content' in (data as Record<string, unknown>)) {
+        const content = (data as Record<string, unknown>)['content'];
+        if (Array.isArray(content)) return content as MedicineVO[];
+      }
+      if (Array.isArray(res?.data)) return res?.data as MedicineVO[];
+      if (Array.isArray(data)) return data as MedicineVO[];
+      return [] as MedicineVO[];
     } catch (err) {
       logApiError('pharmacyApi.searchMedicines', err as AxiosError);
       return [];
@@ -651,8 +1054,11 @@ export const doctorApi = {
     try {
       // 合并 config.params（例如 doctorId/deptId）和 showAll 标志
       const params = { ...(config?.params ?? {}), showAll } as Record<string, unknown>;
+      logger.debug('doctorApi.getWaitingList request', { params });
       const res = await api.get(`/doctor/waiting-list`, { ...(config ?? {}), params });
+      logger.debug('doctorApi.getWaitingList raw response', { status: res?.status, data: res?.data });
       const norm = normalizeResponse<RegistrationVO[]>(res?.data);
+      logger.debug('doctorApi.getWaitingList normalized', { success: norm.success, message: norm.message, data: norm.data });
       // 后端可能返回 HTTP 200 但 body 包含 { code: 401, message: '认证失败' }
       // 将这类业务错误提升为异常，便于上层统一处理（例如触发跳转登录）
       if (!norm.success) {
@@ -674,7 +1080,7 @@ export const doctorApi = {
         insuranceType: item.insuranceType ?? '自费',
         mrn: item.mrn ?? item.regNo ?? '',
         type: item.type ?? '普通门诊',
-        gender: item.gender ?? 2,
+        gender: item.gender ?? 0,
         age: item.age ?? 0,
         patientName: item.patientName ?? '未知患者',
       })) as RegistrationVO[];
@@ -778,6 +1184,32 @@ export const doctorApi = {
       const e = err as AxiosError;
       logApiError('doctorApi.saveMedicalRecord', e);
       return null;
+    }
+  },
+
+  // 创建处方
+  createPrescription: async (data: Partial<PrescriptionVO>): Promise<PrescriptionVO | null> => {
+    try {
+      const res = await api.post('/doctor/prescriptions/create', data);
+      const norm = normalizeResponse<PrescriptionVO>(res?.data);
+      return norm.data ?? null;
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('doctorApi.createPrescription', e);
+      return null;
+    }
+  },
+
+  // 审核处方
+  reviewPrescription: async (id: number, data: { reviewDoctorId?: number; remark?: string; status?: number }): Promise<boolean> => {
+    try {
+      const res = await api.post(`/doctor/prescriptions/${encodeURIComponent(String(id))}/review`, data);
+      const norm = normalizeResponse<unknown>(res?.data);
+      return norm.success;
+    } catch (err: unknown) {
+      const e = err as AxiosError;
+      logApiError('doctorApi.reviewPrescription', e);
+      return false;
     }
   }
 };
@@ -904,6 +1336,60 @@ export const chargeApi = {
     } catch (err) {
       logApiError('chargeApi.checkRegistrationPaymentStatus', err as AxiosError);
       return false;
+    }
+  },
+};
+
+// --- 审计日志 API ---
+/**
+ * 审计日志相关 API：查询操作日志和安全审计
+ */
+export const auditApi = {
+  // 查询操作人的审计日志
+  getByOperatorId: async (operatorId: number): Promise<AuditLogEntity[]> => {
+    try {
+      const res = await api.get(`/audit-logs/operator/${encodeURIComponent(String(operatorId))}`);
+      const norm = normalizeResponse<AuditLogEntity[]>(res?.data);
+      if (norm.data && Array.isArray(norm.data)) return norm.data;
+      return Array.isArray(res?.data) ? (res?.data as AuditLogEntity[]) : [];
+    } catch (err) {
+      logApiError('auditApi.getByOperatorId', err as AxiosError);
+      return [];
+    }
+  },
+
+  // 综合查询审计日志（支持分页和多条件查询）
+  search: async (params: {
+    page?: number;
+    size?: number;
+    sort?: string[];
+    module?: string;
+    action?: string;
+    operatorUsername?: string;
+    auditType?: string;
+    startTime?: string;
+    endTime?: string;
+  }): Promise<PageAuditLogEntity | null> => {
+    try {
+      const res = await api.get('/audit-logs/search', { params });
+      const norm = normalizeResponse<PageAuditLogEntity>(res?.data);
+      return norm.data ?? null;
+    } catch (err) {
+      logApiError('auditApi.search', err as AxiosError);
+      return null;
+    }
+  },
+
+  // 根据TraceId查询审计日志
+  getByTraceId: async (traceId: string): Promise<AuditLogEntity[]> => {
+    try {
+      const res = await api.get(`/audit-logs/trace/${encodeURIComponent(traceId)}`);
+      const norm = normalizeResponse<AuditLogEntity[]>(res?.data);
+      if (norm.data && Array.isArray(norm.data)) return norm.data;
+      return Array.isArray(res?.data) ? (res?.data as AuditLogEntity[]) : [];
+    } catch (err) {
+      logApiError('auditApi.getByTraceId', err as AxiosError);
+      return [];
     }
   },
 };

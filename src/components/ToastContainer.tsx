@@ -10,7 +10,7 @@ const ToastContainer: React.FC = () => {
   const removeNotification = useStore((s) => s.removeNotification);
 
   return (
-    <div className="fixed top-4 right-4 z-50 flex flex-col gap-3">
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-3">
       {notifications.map(n => (
         <div key={n.id} className={`min-w-55 max-w-sm px-4 py-3 rounded-lg shadow-lg border ${n.type === 'success' ? 'bg-white border-green-100' : n.type === 'error' ? 'bg-white border-red-100' : 'bg-white border-slate-100'}`}>
           <div className="flex items-start gap-3">

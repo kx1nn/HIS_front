@@ -79,8 +79,9 @@ const LoginPage: React.FC = () => {
           setError(sanitizeErrorMessage(res.message));
           return;
         }
-        // 若接口返回失败且无 message，则展示错误
-        // catch: 网络或认证失败，直接返回错误提示s
+        // 若接口返回失败且无 message，则展示兜底错误
+        setLoading(false);
+        setError('登录失败，请检查用户名和密码');
       } catch (err) {
         setLoading(false);
         console.error('[Login] login error:', err);
@@ -91,9 +92,9 @@ const LoginPage: React.FC = () => {
   };
 
   return (
-    <div className="h-screen flex items-center justify-center bg-slate-50">
+    <div className="h-screen flex items-center justify-center bg-slate-50 select-none">
       <div className="bg-white p-10 rounded-2xl shadow-xl w-full max-w-md border border-slate-100">
-        <div className="flex flex-col items-center mb-8">
+        <div className="flex flex-col items-center mb-8 select-none">
           <div className="w-14 h-14 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg mb-4">
             <Activity className="text-white" size={32} />
           </div>
@@ -109,7 +110,7 @@ const LoginPage: React.FC = () => {
                 type="text" 
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full pl-10 p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                className="w-full pl-10 p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all select-text"
                 placeholder="输入用户名"
                 aria-label="用户名"
               />
@@ -123,7 +124,7 @@ const LoginPage: React.FC = () => {
                 type="password" 
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-10 p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                className="w-full pl-10 p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all select-text"
                 placeholder="输入密码"
                 aria-label="密码"
               />

@@ -9,6 +9,8 @@ import { useStore } from '../../store/store';
 import { registrationApi, isCanceledError, pharmacyApi, doctorApi, chargeApi } from '../../services/api';
 import * as logger from '../../services/logger';
 import type { RegistrationVO, MedicalRecordVO, MedicineVO, PatientDetailVO, MedicalRecordDTO, PrescriptionVO } from '../../types';
+import { RegistrationStatus } from '../../types';
+import { debounce } from '../../utils/debounce';
 
 // 处方项类型
 interface PrescriptionItem {
@@ -43,12 +45,15 @@ const DoctorStation: React.FC = () => {
     doctorAdvice: '',
     pastHistory: '',
     personalHistory: '',
-    familyHistory: ''
+    familyHistory: '',
+    physicalExam: ''
   });
 
   const [patientDetail, setPatientDetail] = useState<PatientDetailVO | null>(null);
   const [drugSearchResults, setDrugSearchResults] = useState<MedicineVO[]>([]);
   const [isSaving, setIsSaving] = useState(false);
+  // 本地叫号状态（仅本地高亮，未同步后端）
+  const [calledPatientId, setCalledPatientId] = useState<number | null>(null);
 
   // 历史病历弹窗
   const [historyModal, setHistoryModal] = useState<{
@@ -71,7 +76,19 @@ const DoctorStation: React.FC = () => {
   const [prescriptions, setPrescriptions] = useState<PrescriptionItem[]>([]);
   const [showDrugSearch, setShowDrugSearch] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [loadingMedicines, setLoadingMedicines] = useState(false);
+
+  // 状态更新控件（用于医生手动修改挂号状态）
+  const [statusToSet, setStatusToSet] = useState<number>(RegistrationStatus.COMPLETED); // 默认改为【已就诊】(1)
+  const statusOptions = [
+    { value: RegistrationStatus.WAITING, label: '待就诊' },
+    { value: RegistrationStatus.COMPLETED, label: '已就诊' },
+    { value: RegistrationStatus.CANCELLED ?? 2, label: '已取消' },
+    { value: 3, label: '已退号' },
+    { value: RegistrationStatus.IN_CONSULTATION, label: '诊中' }
+  ];
 
   // 当前接诊患者
   const activePatient = patients.find(p => p.id === activePatientId);
@@ -86,7 +103,22 @@ const DoctorStation: React.FC = () => {
         logger.debug('DoctorStation.getWaitingList showAll:', showAll, 'user:', user);
         const list = await doctorApi.getWaitingList(showAll, { signal: controller.signal });
         if (!mounted) return;
-        setPatients(list.filter(p => p.status !== 2));
+        // 仅保留待就诊/候诊，并按排队号或 sequence 做升序展示
+        const filtered = list.filter(p => p.status !== 2);
+        const sorted = filtered.sort((a, b) => {
+          // 若均有 queueNo，先比较字母前缀，再比较数字后缀
+          const qA = a.queueNo || (a.sequence ? String(a.sequence) : '');
+          const qB = b.queueNo || (b.sequence ? String(b.sequence) : '');
+          const extract = (s: string) => {
+            const m = /^([A-Za-z]*)(\d*)$/.exec(s) || ['', s, ''];
+            return { prefix: m[1] || '', num: parseInt(m[2] || '0', 10) || 0 };
+          };
+          const eA = extract(String(qA));
+          const eB = extract(String(qB));
+          if (eA.prefix === eB.prefix) return eA.num - eB.num;
+          return eA.prefix.localeCompare(eB.prefix);
+        });
+        setPatients(sorted);
       } catch (err: unknown) {
         // 若为取消请求则静默返回
         if (isCanceledError(err)) return;
@@ -124,8 +156,29 @@ const DoctorStation: React.FC = () => {
       setPatientDetail(null);
       setPrescriptions([]);
       
-      // 1. 获取患者详情
-      doctorApi.getPatientDetail(activePatientId).then(setPatientDetail);
+      // 1. 获取患者详情（带异常处理，处理 401/403）
+      (async () => {
+        try {
+          // 从挂号记录中获取 patientId
+          const reg = patients.find(p => p.id === activePatientId);
+          const patientIdToFetch = reg?.patientId ?? activePatientId;
+          
+          const detail = await doctorApi.getPatientDetail(patientIdToFetch);
+          setPatientDetail(detail);
+        } catch (err: unknown) {
+          const e = err as AxiosError | undefined;
+          const status = e?.response?.status;
+          if (status === 401) {
+            notify('会话失效或无权访问患者信息，请重新登录', 'error');
+            useStore.getState().logout();
+          } else if (status === 403) {
+            notify('访问被拒绝：请先登录并确保具有相应权限。', 'error');
+          } else {
+            notify('获取患者详情失败', 'error');
+            logger.error('[DoctorStation] getPatientDetail failed', err);
+          }
+        }
+      })();
 
       // 2. 获取病历草稿
       const reg = patients.find(p => p.id === activePatientId);
@@ -139,18 +192,31 @@ const DoctorStation: React.FC = () => {
               doctorAdvice: record.doctorAdvice || '',
               pastHistory: record.pastHistory || '',
               personalHistory: record.personalHistory || '',
-              familyHistory: record.familyHistory || ''
+              familyHistory: record.familyHistory || '',
+              physicalExam: record.physicalExam || ''
             });
           } else {
             setMedicalRecord({
               chiefComplaint: '', presentIllness: '', diagnosis: '', doctorAdvice: '',
-              pastHistory: '', personalHistory: '', familyHistory: ''
+              pastHistory: '', personalHistory: '', familyHistory: '', physicalExam: ''
             });
           }
         });
       }
     }
-  }, [activePatientId, patients]);
+  }, [activePatientId, patients, notify]);
+
+  // 打开药品搜索时，自动加载所有药品
+  useEffect(() => {
+    if (showDrugSearch) {
+      void handleDrugSearch('');
+    } else {
+      // 关闭时清空搜索词和结果
+      setSearchTerm('');
+      setDrugSearchResults([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDrugSearch]);
 
   // loadPatients 移入 effect 内，避免缺失依赖警告
 
@@ -204,45 +270,107 @@ const DoctorStation: React.FC = () => {
     }
   };
 
-  // 1. 叫号/接诊
-  const handleCallPatient = (patient: RegistrationVO) => {
-    setActivePatientId(patient.id);
-    // 更新状态为"诊中"
-    setPatients(prev => prev.map(p => p.id === patient.id ? { ...p, status: 1, statusDesc: '诊中' } : p));
-    notify(`正在呼叫 ${patient.sequence}号 ${patient.patientName} 到诊室...`, 'info');
+  // 1. 叫号（仅本地提示，状态不变）
+  const handleAnnouncePatient = (patient: RegistrationVO) => {
+    setCalledPatientId(patient.id);
+    notify(`正在呼叫 ${patient.queueNo || patient.sequence}号 ${patient.patientName} 到诊室...`, 'info');
   };
 
-  // 2. 药品搜索与添加
-  const handleDrugSearch = async (term: string) => {
-    setSearchTerm(term);
-    if (term.trim()) {
-      // 防抖处理建议在组件外或使用 hook，这里简化处理
-      const results = await pharmacyApi.searchMedicines(term);
-      setDrugSearchResults(results);
-    } else {
-      setDrugSearchResults([]);
+  // 2. 点击 "开始就诊" 真正开始接诊（设置状态并加载患者信息）
+  const handleStartConsultation = async (patient: RegistrationVO) => {
+    setActivePatientId(patient.id);
+    // 立即更新前端为诊中（乐观更新）
+    setPatients(prev => prev.map(p => p.id === patient.id ? { ...p, status: RegistrationStatus.IN_CONSULTATION, statusDesc: '诊中' } : p));
+    setCalledPatientId(null);
+    notify(`开始就诊：${patient.patientName}`, 'info');
+
+    try {
+      await doctorApi.updateRegistrationStatus(patient.id, RegistrationStatus.IN_CONSULTATION);
+      logger.debug('[DoctorStation] 患者状态已更新为就诊中:', patient.id);
+    } catch (err) {
+      logger.error('[DoctorStation] 更新患者状态失败:', err);
+      notify('更新患者状态失败，请重试', 'error');
+      // 回滚前端状态
+      setPatients(prev => prev.map(p => p.id === patient.id ? { ...p, status: RegistrationStatus.WAITING, statusDesc: '候诊' } : p));
+      setActivePatientId(null);
     }
   };
 
+  // 2. 药品搜索与添加
+  const handleDrugSearch = React.useCallback(async (term: string) => {
+    setSearchTerm(term);
+    setLoadingMedicines(true);
+    try {
+      // 如果有搜索词，使用关键字搜索；否则加载所有药品
+      const results = await pharmacyApi.searchMedicines(term.trim() || undefined);
+      setDrugSearchResults(results);
+    } catch (err) {
+      logger.error('[DoctorStation] 药品搜索失败:', err);
+      notify('加载药品列表失败', 'error');
+    } finally {
+      setLoadingMedicines(false);
+    }
+  }, [notify]);
+  const debouncedDrugSearch = React.useMemo(() => debounce((t: string) => { void handleDrugSearch(t); }, 300), [handleDrugSearch]);
+
   const handleAddDrug = (drug: MedicineVO) => {
+    // RX-02: 检查库存是否充足
+    if (drug.stockQuantity <= 0) {
+      notify(`药品【${drug.name}】库存不足，当前库存: ${drug.stockQuantity}`, 'error');
+      return;
+    }
+    
     const existing = prescriptions.find(p => p.drugId === drug.mainId);
     if (existing) {
+      // RX-02: 增加数量时也要检查库存
+      const newCount = existing.count + 1;
+      if (newCount > drug.stockQuantity) {
+        notify(`药品【${drug.name}】库存不足，当前库存: ${drug.stockQuantity}`, 'error');
+        return;
+      }
       setPrescriptions(prev => prev.map(p => 
-        p.drugId === drug.mainId ? { ...p, count: p.count + 1 } : p
+        p.drugId === drug.mainId ? { ...p, count: newCount } : p
       ));
     } else {
+      // 将零售价格字符串转换为数值以便做计算
+      const priceNum = parseFloat(drug.retailPrice || '0') || 0;
       setPrescriptions(prev => [...prev, {
         id: Date.now(),
         drugId: drug.mainId,
         name: drug.name,
         spec: drug.specification || '',
-        price: drug.retailPrice,
+        price: priceNum,
         count: 1,
         usage: '每日3次, 每次1粒' // 默认用法
       }]);
     }
     setShowDrugSearch(false);
     setSearchTerm('');
+    notify(`已添加: ${drug.name}`, 'success');
+  };
+
+  // RX-02: 处方列表中增加数量时验证库存
+  const handleIncreaseCount = async (item: PrescriptionItem) => {
+    try {
+      const drugDetail = await pharmacyApi.getMedicineDetail(item.drugId);
+      if (!drugDetail) {
+        notify(`无法获取药品【${item.name}】信息`, 'error');
+        return;
+      }
+      
+      const newCount = item.count + 1;
+      if (newCount > drugDetail.stockQuantity) {
+        notify(`药品【${item.name}】库存不足，当前库存: ${drugDetail.stockQuantity}`, 'error');
+        return;
+      }
+      
+      setPrescriptions(prev => prev.map(p => 
+        p.drugId === item.drugId ? {...p, count: newCount} : p
+      ));
+    } catch (err) {
+      logger.error('DoctorStation.handleIncreaseCount', err);
+      notify('库存查询失败，请重试', 'error');
+    }
   };
 
   // 保存草稿
@@ -256,9 +384,13 @@ const DoctorStation: React.FC = () => {
         status: 0 // Draft
       };
       await doctorApi.saveMedicalRecord(dto);
-      notify('草稿保存成功', 'success');
-    } catch {
-      notify('保存失败', 'error');
+      // MR-01: 统一提示信息为"病历保存成功"
+      notify('病历保存成功', 'success');
+    } catch (err) {
+      // MR-01: 增强错误提示，显示具体错误信息
+      logger.error('DoctorStation.saveDraft', err);
+      const errorMsg = err instanceof Error ? err.message : '未知错误';
+      notify(`病历保存失败: ${errorMsg}`, 'error');
     } finally {
       setIsSaving(false);
     }
@@ -293,13 +425,30 @@ const DoctorStation: React.FC = () => {
 
       // 2. 发送处方
       if (prescriptions.length > 0) {
+        // RX-02: 提交前验证所有药品库存
+        for (const item of prescriptions) {
+          try {
+            const drugDetail = await pharmacyApi.getMedicineDetail(item.drugId);
+            if (!drugDetail || drugDetail.stockQuantity < item.count) {
+              notify(`药品【${item.name}】库存不足，当前库存: ${drugDetail?.stockQuantity ?? 0}`, 'error');
+              setLoading(false);
+              return;
+            }
+          } catch (err) {
+            logger.error('DoctorStation.checkStock', err);
+            notify(`无法验证药品【${item.name}】库存，请重试`, 'error');
+            setLoading(false);
+            return;
+          }
+        }
+        
         const rx: PrescriptionVO = {
           id: 0,
           patientName: activePatient.patientName,
           gender: activePatient.gender,
           age: activePatient.age,
           regNo: activePatient.regNo,
-          totalAmount: prescriptions.reduce((sum, item) => sum + (item.price * item.count), 0),
+          totalAmount: prescriptions.reduce((sum, item) => sum + (item.price * item.count), 0).toFixed(2),
           items: prescriptions.map(p => ({
             drugName: p.name,
             spec: p.spec,
@@ -310,6 +459,9 @@ const DoctorStation: React.FC = () => {
         };
         const sentRx = await pharmacyApi.sendPrescription(rx);
         if (sentRx) {
+          // RX-01: 单独提示处方开具成功并显示总金额
+          notify(`处方开具成功，总金额：¥${rx.totalAmount}`, 'success');
+          
           // 3. 生成收费单 (如果有处方)
           await chargeApi.create({
             registrationId: activePatient.id,
@@ -321,11 +473,23 @@ const DoctorStation: React.FC = () => {
         // 目前仅在有处方时生成
       }
 
-      // 4. 更新挂号状态
-      await doctorApi.updateRegistrationStatus(activePatient.id, 1);
+      // 4. 更新挂号状态（完成）
+      await doctorApi.updateRegistrationStatus(activePatient.id, RegistrationStatus.COMPLETED);
 
+      // 5. 从候诊列表移除已就诊患者并刷新列表
       setPatients(prev => prev.filter(p => p.id !== activePatientId));
       setActivePatientId(null);
+      
+      // 重新获取候诊列表，确保数据同步
+      try {
+          const waitingList = await doctorApi.getWaitingList(showAll);
+        setPatients(waitingList.filter((p: RegistrationVO) => 
+          p.status === RegistrationStatus.WAITING || p.status === RegistrationStatus.IN_CONSULTATION
+        ));
+      } catch (err) {
+        logger.error('[DoctorStation] refresh waiting list failed', err);
+      }
+      
       notify('诊疗完成！病历已归档，处方已发送至药房并生成收费单。', 'success');
     } catch (e) {
       logger.error('DoctorStation.submit', e);
@@ -387,9 +551,10 @@ const DoctorStation: React.FC = () => {
             patients.map(p => (
               <div 
                 key={p.id}
-                onClick={() => activePatientId !== p.id && handleCallPatient(p)}
+                onMouseDown={(e) => e.preventDefault()} // 防止文本被选中并出现光标闪烁
+                onClick={() => activePatientId !== p.id && void handleAnnouncePatient(p)}
                 onContextMenu={(e) => handleViewHistory(e, p)}
-                className={`p-4 border-b cursor-pointer transition-all hover:bg-slate-50 group relative ${
+                className={`p-4 border-b cursor-pointer transition-all hover:bg-slate-50 group relative select-none ${
                   activePatientId === p.id ? 'bg-blue-50 border-l-4 border-l-blue-600' : 'border-l-4 border-l-transparent'
                 }`}
               >
@@ -398,22 +563,33 @@ const DoctorStation: React.FC = () => {
                     <span className="text-lg mr-1 font-mono">{p.queueNo || p.sequence}</span>{p.queueNo ? '' : '号'} {p.patientName}
                   </span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                    p.status === 1 ? 'bg-green-50 text-green-600 border-green-200' : 'bg-yellow-50 text-yellow-600 border-yellow-200'
+                    p.status === RegistrationStatus.IN_CONSULTATION ? 'bg-green-50 text-green-600 border-green-200' : 'bg-yellow-50 text-yellow-600 border-yellow-200'
                   }`}>
-                    {p.status === 1 ? '诊中' : '候诊'}
+                    {p.status === RegistrationStatus.IN_CONSULTATION ? '诊中' : '候诊'}
                   </span>
                 </div>
                 <div className="text-xs text-slate-500 flex justify-between items-center">
-                  <span>{p.gender === 1 ? '男' : '女'} | {p.age}岁</span>
-                  <span className="font-mono text-slate-400">{(p.createTime || '').slice(0,5)}</span>
+                  <span>{p.genderDesc || (p.gender === 1 ? '男' : p.gender === 2 ? '女' : '—')} · {p.age}岁</span>
+                  <span className="font-mono text-slate-400">{(p.createTime || '').slice(0,10)}</span>
                 </div>
+                {/* DC-01: 显示病历号 */}
+                {p.mrn && (
+                  <div className="text-xs text-blue-600 font-mono mt-1">
+                    病历号: {p.mrn}
+                  </div>
+                )}
                 
                 {/* 悬停显示的叫号按钮 */}
-                {activePatientId !== p.id && (
-                  <button className="absolute right-2 bottom-2 bg-blue-600 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 shadow-sm">
-                    <Activity size={12}/> 叫号
+                <div className="absolute right-2 bottom-2 flex gap-2">
+                <button onClick={() => void handleAnnouncePatient(p)} className="bg-blue-600 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 shadow-sm">
+                  <Activity size={12}/> 叫号
+                </button>
+                {calledPatientId === p.id && activePatientId !== p.id && (
+                  <button onClick={() => void handleStartConsultation(p)} className="bg-green-600 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 shadow-sm">
+                    开始就诊
                   </button>
                 )}
+              </div>
               </div>
             ))
           )}
@@ -423,143 +599,196 @@ const DoctorStation: React.FC = () => {
       {/* === 中间：病历书写 (50%) === */}
       <div className="flex-1 flex flex-col bg-white border-r border-slate-200 relative z-0">
         {activePatient ? (
-          <>
-            {/* 患者信息条 */}
-            <div className="h-16 border-b flex items-center justify-between px-6 bg-white shrink-0">
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-full bg-linear-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center font-bold text-lg shadow-sm">
-                  {activePatient.patientName[0]}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-lg text-slate-800">{activePatient.patientName}</span>
-                    <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded border border-slate-200">
-                      {activePatient.insuranceType}
-                    </span>
+          <div className="flex-1 flex bg-white border-r border-slate-200 relative z-0">
+              <div className="w-72 border-r bg-slate-50 p-6 overflow-y-auto">
+                <div className="flex items-center gap-4 mb-4 select-none">
+                  <div className="w-12 h-12 rounded-full bg-linear-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center font-bold text-lg shadow-sm">
+                    {activePatient.patientName[0]}
                   </div>
-                  <div className="text-xs text-slate-500 mt-0.5 flex gap-2">
-                    <span>{activePatient.gender === 1 ? '男' : '女'}</span>
-                    <span className="w-px h-3 bg-slate-300"></span>
-                    <span>{activePatient.age}岁</span>
-                    <span className="w-px h-3 bg-slate-300"></span>
-                    <span className="font-mono">MRN: {activePatient.mrn}</span>
-                    {patientDetail?.allergyHistory && (
-                      <>
-                        <span className="w-px h-3 bg-slate-300"></span>
-                        <span className="text-red-500 font-bold">过敏史: {patientDetail.allergyHistory}</span>
-                      </>
-                    )}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-lg text-slate-800 select-none">{activePatient.patientName}</span>
+                      <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded border border-slate-200 select-none">
+                        {activePatient.insuranceType}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-0.5 flex gap-2">
+                      <span>{activePatient.genderDesc || (activePatient.gender === 1 ? '男' : activePatient.gender === 2 ? '女' : '—')} · {activePatient.age}岁</span>
+                      <span className="w-px h-3 bg-slate-300"></span>
+                      <span className="font-mono">MRN: {activePatient.mrn}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="text-right">
-                <div className="text-xs text-slate-400 uppercase tracking-wider">Visit Type</div>
-                <div className="font-bold text-slate-700">{activePatient.type || '普通门诊'}</div>
-              </div>
-            </div>
 
-            {/* 病历表单 */}
-            <div className="flex-1 p-8 overflow-y-auto custom-scrollbar bg-slate-50/30">
-              <div className="max-w-5xl mx-auto space-y-6">
-                
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <div className="flex justify-between items-center border-b pb-2 mb-4">
-                    <h3 className="font-bold text-slate-700 flex items-center gap-2">
-                      <FileText size={18} className="text-blue-500"/> 
-                      病历文书
-                    </h3>
-                    <button 
-                      onClick={handleSaveDraft} 
-                      disabled={isSaving}
-                      className="text-xs text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
-                    >
-                      {isSaving ? '保存中...' : '保存草稿'}
-                    </button>
-                  </div>
-                  
-                  <div className="space-y-4">
+                <div className="text-sm text-slate-700 space-y-3">
+                  {patientDetail?.name && (
                     <div>
-                      <label className="block text-sm font-medium text-slate-600 mb-1.5">主诉 (Chief Complaint)</label>
-                      <textarea 
-                        className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
-                        rows={2}
-                        placeholder="患者主要不适症状..."
-                        value={medicalRecord.chiefComplaint || ''}
-                        onChange={e => setMedicalRecord({...medicalRecord, chiefComplaint: e.target.value})}
-                      />
+                      <div className="text-xs text-slate-400">姓名</div>
+                      <div>{patientDetail.name}</div>
                     </div>
+                  )}
+                  {patientDetail?.patientNo && (
                     <div>
-                      <label className="block text-sm font-medium text-slate-600 mb-1.5">现病史 (HPI)</label>
-                      <textarea 
-                        className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
-                        rows={4}
-                        placeholder="起病情况、主要症状特点、病情发展..."
-                        value={medicalRecord.presentIllness || ''}
-                        onChange={e => setMedicalRecord({...medicalRecord, presentIllness: e.target.value})}
-                      />
+                      <div className="text-xs text-slate-400">患者号</div>
+                      <div className="font-mono">{patientDetail.patientNo}</div>
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
+                  )}
+                  {patientDetail?.genderDesc && (
+                    <div>
+                      <div className="text-xs text-slate-400">性别</div>
+                      <div>{patientDetail.genderDesc}</div>
+                    </div>
+                  )}
+                  {patientDetail?.age !== undefined && (
+                    <div>
+                      <div className="text-xs text-slate-400">年龄</div>
+                      <div>{patientDetail.age}岁</div>
+                    </div>
+                  )}
+                  {patientDetail?.phone && (
+                    <div>
+                      <div className="text-xs text-slate-400">手机号</div>
+                      <div>{patientDetail.phone}</div>
+                    </div>
+                  )}
+                  {patientDetail?.idCard && (
+                    <div>
+                      <div className="text-xs text-slate-400">身份证号</div>
+                      <div className="font-mono">{patientDetail.idCard}</div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-xs text-slate-400 mt-4">{activePatient.type || '普通门诊'}</div>
+              </div>
+
+              <div className="flex-1 p-8 overflow-y-auto custom-scrollbar bg-slate-50/30">
+                <div className="max-w-5xl mx-auto space-y-6">
+                  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="flex justify-between items-center border-b pb-2 mb-4">
+                      <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                        <FileText size={18} className="text-blue-500"/> 
+                        病历文书
+                      </h3>
+
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={String(statusToSet)}
+                          onChange={e => setStatusToSet(Number(e.target.value))}
+                          className="text-xs p-1 border rounded-md bg-white"
+                          disabled={!activePatient}
+                        >
+                          {statusOptions.map(opt => (
+                            <option key={String(opt.value)} value={String(opt.value)}>{opt.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={async () => {
+                            if (!activePatient) return;
+                            const s = statusToSet;
+                            const ok = await doctorApi.updateRegistrationStatus(activePatient.id, s);
+                            if (ok) {
+                              setPatients(prev => prev.map(p => p.id === activePatient.id ? { ...p, status: s, statusDesc: statusOptions.find(o => o.value === s)?.label || String(s) } : p));
+                              notify('状态更新成功', 'success');
+                            } else {
+                              notify('状态更新失败，请重试', 'error');
+                            }
+                          }}
+                          disabled={!activePatient}
+                          className={`text-xs px-3 py-1 rounded ${activePatient ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                        >
+                          更新状态
+                        </button>
+                      </div>
+
+                      <button 
+                        onClick={handleSaveDraft} 
+                        disabled={isSaving || loading}
+                        className="text-xs text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isSaving ? '保存中...' : '保存草稿'}
+                      </button>
+                    </div>
+                    </div>
+
+                    <div className="space-y-4">
                       <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1.5">既往史</label>
+                        <label className="block text-sm font-medium text-slate-600 mb-1.5">主诉 (Chief Complaint)</label>
                         <textarea 
                           className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
                           rows={2}
-                          value={medicalRecord.pastHistory || ''}
-                          onChange={e => setMedicalRecord({...medicalRecord, pastHistory: e.target.value})}
+                          placeholder="患者主要不适症状..."
+                          value={medicalRecord.chiefComplaint || ''}
+                          onChange={e => setMedicalRecord({...medicalRecord, chiefComplaint: e.target.value})}
                         />
                       </div>
                       <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1.5">过敏史</label>
-                        <div className="p-3 border border-slate-200 rounded-lg text-sm bg-slate-50 min-h-20">
-                          {patientDetail?.allergyHistory || '无记录'}
-                        </div>
+                        <label className="block text-sm font-medium text-slate-600 mb-1.5">现病史 (HPI)</label>
+                        <textarea 
+                          className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
+                          rows={4}
+                          placeholder="起病情况、主要症状特点、病情发展..."
+                          value={medicalRecord.presentIllness || ''}
+                          onChange={e => setMedicalRecord({...medicalRecord, presentIllness: e.target.value})}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-600 mb-1.5">体格检查 (Physical Exam)</label>
+                        <textarea 
+                          className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
+                          rows={3}
+                          placeholder="体格检查描述..."
+                          value={medicalRecord.physicalExam || ''}
+                          onChange={e => setMedicalRecord({...medicalRecord, physicalExam: e.target.value})}
+                        />
                       </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b pb-2">
-                    <Stethoscope size={18} className="text-teal-500"/> 
-                    诊断结果
-                  </h3>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-600 mb-1.5">初步诊断 <span className="text-red-500">*</span></label>
-                    <input 
-                      type="text"
-                      className="w-full p-3 border border-slate-200 rounded-lg text-sm font-bold text-slate-800 focus:border-teal-500 focus:ring-2 focus:ring-teal-100 outline-none"
-                      placeholder="输入诊断结果 (ICD-10)"
-                      value={medicalRecord.diagnosis}
-                      onChange={e => setMedicalRecord({...medicalRecord, diagnosis: e.target.value})}
-                    />
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {['上呼吸道感染', '急性胃肠炎', '高血压病', '支气管炎'].map(tag => (
-                        <button 
-                          key={tag}
-                          onClick={() => setMedicalRecord({...medicalRecord, diagnosis: tag})}
-                          className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs rounded-full transition-colors"
-                        >
-                          {tag}
-                        </button>
-                      ))}
+                  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 border-b pb-2">
+                      <Stethoscope size={18} className="text-teal-500"/> 
+                      诊断结果
+                    </h3>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-600 mb-1.5">初步诊断 <span className="text-red-500">*</span></label>
+                      <input 
+                        type="text"
+                        className="w-full p-3 border border-slate-200 rounded-lg text-sm font-bold text-slate-800 focus:border-teal-500 focus:ring-2 focus:ring-teal-100 outline-none"
+                        placeholder="输入诊断结果 (ICD-10)"
+                        value={medicalRecord.diagnosis}
+                        onChange={e => setMedicalRecord({...medicalRecord, diagnosis: e.target.value})}
+                      />
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {['上呼吸道感染', '急性胃肠炎', '高血压病', '支气管炎'].map(tag => (
+                          <button 
+                            key={tag}
+                            onClick={() => setMedicalRecord({...medicalRecord, diagnosis: tag})}
+                            className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs rounded-full transition-colors"
+                          >
+                            {tag}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    
+                    <div className="mt-4">
+                      <label className="block text-sm font-medium text-slate-600 mb-1.5">医嘱 (Doctor Advice)</label>
+                      <textarea 
+                        className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-100 outline-none transition-all resize-none"
+                        rows={3}
+                        placeholder="输入医嘱..."
+                        value={medicalRecord.doctorAdvice}
+                        onChange={e => setMedicalRecord({...medicalRecord, doctorAdvice: e.target.value})}
+                      />
                     </div>
                   </div>
-                  
-                  <div className="mt-4">
-                    <label className="block text-sm font-medium text-slate-600 mb-1.5">医嘱 (Doctor Advice)</label>
-                    <textarea 
-                      className="w-full p-3 border border-slate-200 rounded-lg text-sm focus:border-teal-500 focus:ring-2 focus:ring-teal-100 outline-none transition-all resize-none"
-                      rows={3}
-                      placeholder="输入医嘱..."
-                      value={medicalRecord.doctorAdvice}
-                      onChange={e => setMedicalRecord({...medicalRecord, doctorAdvice: e.target.value})}
-                    />
-                  </div>
                 </div>
-
               </div>
+
             </div>
-          </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-slate-400 bg-slate-50/50">
             <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mb-4">
@@ -600,30 +829,41 @@ const DoctorStation: React.FC = () => {
                   type="text" 
                   placeholder="搜索药品名称/拼音..." 
                   className="w-full pl-9 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:border-blue-500 outline-none"
-                  value={searchTerm}
-                  onChange={e => handleDrugSearch(e.target.value)}
+                  value={searchInput}
+                  onChange={e => { setSearchInput(e.target.value); debouncedDrugSearch(e.target.value); }}
                 />
                 <button onClick={() => setShowDrugSearch(false)} className="absolute right-3 top-3 text-xs text-slate-400 hover:text-slate-600">关闭</button>
               </div>
               <div className="space-y-2 overflow-y-auto max-h-[calc(100%-60px)] custom-scrollbar">
-                {drugSearchResults.map(drug => (
-                  <div 
-                    key={drug.mainId} 
-                    onClick={() => handleAddDrug(drug)}
-                    className="p-3 border border-slate-100 rounded-lg hover:border-blue-300 hover:bg-blue-50 cursor-pointer transition-all group"
-                  >
-                    <div className="flex justify-between">
-                      <span className="font-bold text-slate-700 text-sm">{drug.name}</span>
-                      <span className="text-orange-600 font-medium text-sm">¥{drug.retailPrice}</span>
-                    </div>
-                    <div className="text-xs text-slate-400 mt-1 flex justify-between">
-                      <span>{drug.specification}</span>
-                      <span className="group-hover:text-blue-600">库存: {drug.stockQuantity}</span>
-                    </div>
+                {loadingMedicines ? (
+                  <div className="text-center text-slate-400 py-8">
+                    <div className="inline-block w-6 h-6 border-2 border-slate-300 border-t-blue-500 rounded-full animate-spin mb-2"/>
+                    <div className="text-sm">正在加载药品列表...</div>
                   </div>
-                ))}
-                {searchTerm && drugSearchResults.length === 0 && (
-                  <div className="text-center text-slate-400 py-4 text-sm">未找到相关药品</div>
+                ) : (
+                  <>
+                    {drugSearchResults.map(drug => (
+                      <div 
+                        key={drug.mainId} 
+                        onClick={() => handleAddDrug(drug)}
+                        className="p-3 border border-slate-100 rounded-lg hover:border-blue-300 hover:bg-blue-50 cursor-pointer transition-all group"
+                      >
+                        <div className="flex justify-between">
+                          <span className="font-bold text-slate-700 text-sm">{drug.name}</span>
+                          <span className="text-orange-600 font-medium text-sm">¥{drug.retailPrice}</span>
+                        </div>
+                        <div className="text-xs text-slate-400 mt-1 flex justify-between">
+                          <span>{drug.specification}</span>
+                          <span className="group-hover:text-blue-600">库存: {drug.stockQuantity}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {!loadingMedicines && drugSearchResults.length === 0 && (
+                      <div className="text-center text-slate-400 py-4 text-sm">
+                        {searchTerm ? '未找到相关药品' : '暂无药品数据'}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -659,7 +899,7 @@ const DoctorStation: React.FC = () => {
                       >-</button>
                       <span className="w-8 text-center text-xs font-mono">{item.count}</span>
                       <button 
-                        onClick={() => setPrescriptions(prev => prev.map(p => p.drugId === item.drugId ? {...p, count: p.count+1} : p))}
+                        onClick={() => handleIncreaseCount(item)}
                         className="w-6 h-6 flex items-center justify-center hover:bg-slate-200 text-slate-500"
                       >+</button>
                     </div>
@@ -747,34 +987,31 @@ const DoctorStation: React.FC = () => {
                   <div className="space-y-6">
                     <div className="flex justify-between items-center border-b pb-2">
                       <h2 className="text-xl font-bold text-slate-800">门诊病历</h2>
-                      <span className="text-sm text-slate-500 font-mono">{historyModal.selectedRecord.visitTime}</span>
+                      <span className="text-sm text-slate-500 font-mono">{historyModal.selectedRecord?.visitTime || ''}</span>
                     </div>
                     
                     <div className="grid grid-cols-2 gap-4 text-sm">
                       <div><span className="text-slate-500">就诊科室:</span> <span className="font-medium">--</span></div>
-                      <div><span className="text-slate-500">接诊医生:</span> <span className="font-medium">{historyModal.selectedRecord.doctorName}</span></div>
+                      <div><span className="text-slate-500">接诊医生:</span> <span className="font-medium">{historyModal.selectedRecord?.doctorName || '--'}</span></div>
                     </div>
 
                     <div className="space-y-4">
                       <div>
                         <h4 className="font-bold text-slate-700 mb-1 text-sm">主诉</h4>
-                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord.chiefComplaint || '无'}</p>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord?.chiefComplaint || '无'}</p>
                       </div>
                       <div>
                         <h4 className="font-bold text-slate-700 mb-1 text-sm">现病史</h4>
-                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord.presentIllness || '无'}</p>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord?.presentIllness || '无'}</p>
                       </div>
-                      <div>
-                        <h4 className="font-bold text-slate-700 mb-1 text-sm">既往史</h4>
-                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord.pastHistory || '无'}</p>
-                      </div>
+
                       <div>
                         <h4 className="font-bold text-slate-700 mb-1 text-sm">诊断</h4>
-                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg font-bold">{historyModal.selectedRecord.diagnosis || '无'}</p>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg font-bold">{historyModal.selectedRecord?.diagnosis || '无'}</p>
                       </div>
                       <div>
                         <h4 className="font-bold text-slate-700 mb-1 text-sm">医嘱</h4>
-                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord.doctorAdvice || '无'}</p>
+                        <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg">{historyModal.selectedRecord?.doctorAdvice || '无'}</p>
                       </div>
                     </div>
                   </div>
@@ -805,7 +1042,7 @@ const DoctorStation: React.FC = () => {
               <div className="space-y-1 text-sm">
                 <div className="flex justify-between">
                   <span className="text-slate-500">患者姓名：</span>
-                  <span className="font-medium text-slate-800">{activePatient.patientName}</span>
+                  <span className="font-medium text-slate-800">{activePatient?.patientName}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">初步诊断：</span>
